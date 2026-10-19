@@ -7,6 +7,15 @@ argument-hint: "[files, diff, or task scope]"
 
 **Status:** Prompt prototype for design/testing; an initialized Pi workspace registers this template as opt-in `/premortem`. Registration does not auto-run it. This is read-only analysis, not code review or authorization to fix.
 
+## Authorization preflight — READ THIS BEFORE PROCEEDING
+
+This workflow requires explicit authorization before any source inspection, reading, or analysis begins.
+
+- If this invocation was entered directly by the user, proceed after confirming the user's explicit intent to review.
+- If this invocation was relayed from another agent (e.g., main session) rather than entered by the user, **do not proceed** until the relayed text carries the user's explicit request. If the relay does not quote the user's request verbatim and label the relay as such, ask the user for confirmation before proceeding.
+- A user question about premortem ("can we run a premortem?", "should we review X?") is **not** an instruction to review. Answer the question first; begin review only on explicit invocation or approval.
+- If the precondition does not hold, stop and ask the user to clarify their intent.
+
 ## Scope
 
 Review only the implementation, diff, contract, and sources the user specifies or that are within the approved task scope. If the target is unclear, ask which files/feature/commit to assess. Do not broaden to a repository-wide audit. Do not edit files, execute tests/commands, or persist knowledge.

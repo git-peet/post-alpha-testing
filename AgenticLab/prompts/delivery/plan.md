@@ -15,6 +15,15 @@ This workflow produces a reviewable implementation plan. It does not implement c
 
 When describing scope, distinguish **this planning session** from the **proposed future implementation**. State that no files were changed or commands run during planning, then separately list the files/actions proposed for implementation and the true out-of-scope areas. Do not put “no edits during planning” in the future implementation's excluded scope unless the PBI itself forbids edits.
 
+## Authorization preflight — READ THIS BEFORE PROCEEDING
+
+This workflow requires explicit authorization before any source inspection, planning, or analysis begins.
+
+- If this invocation was entered directly by the user, proceed after confirming the user's explicit intent to plan.
+- If this invocation was relayed from another agent (e.g., main session) rather than entered by the user, **do not proceed** until the relayed text carries the user's explicit request. If the relay does not quote the user's request verbatim and label the relay as such, ask the user for confirmation before proceeding.
+- A user question about planning ("can we plan X?", "is X feasible?") is **not** an instruction to plan. Answer the question first; begin planning only on explicit invocation or approval.
+- If the precondition does not hold, stop and ask the user to clarify their intent.
+
 ## User-supplied task context
 
 ${@:-Use the current conversation as the task context. If the objective or expected outcome is not established, ask one focused question before planning.}
@@ -60,7 +69,7 @@ At meaningful analysis/handoff points, record only potentially reusable findings
 - whether it is verified, inferred, or unresolved;
 - why it may prevent meaningful future rediscovery.
 
-Carry forward candidates already present in the conversation/plan, merge duplicates, and update their evidence/status rather than repeating them. Check relevant authoritative project material for an existing equivalent before proposing a candidate. Mark `none` if nothing qualifies. Do not write persona-owned memory, session logs, checkpoints, or project records automatically. Durable knowledge is a separate user-approved operation through the project's existing gate.
+Carry forward candidates already present in the conversation/plan, merge duplicates, and update their evidence/status rather than repeating them. Check relevant authoritative project material for an existing equivalent before proposing a candidate. Mark `none` if nothing qualifies. Do not write persona-owned memory, session logs, or project records automatically. A plan checkpoint artifact may be written after explicit user approval at the end of /plan, and must be read and deleted by /implement on completion. The checkpoint is transient and does not persist beyond the current phase. Durable knowledge is a separate user-approved operation through the project's existing gate.
 
 ## 5. Resolve blockers and request approval once
 
@@ -99,7 +108,8 @@ Do not add a second design-approval prompt after the complete plan unless a mate
 [Source-linked candidates with scope/status, or “None”]
 
 ### Approval
-[One consolidated plan-approval question; implementation remains a separate invocation]
+[One consolidated plan-approval question; implementation requires a separate explicit `/implement` invocation.]
+If approved, write `AgenticLab/plan-checkpoint.json` (transient; schema in `AgenticLab/prompts/delivery/checkpoint.md`) containing the approved scope, validation, stop conditions, and decisions. Do not persist rule contents or customer/cart data in the checkpoint.
 ```
 
 ## Prototype limitation

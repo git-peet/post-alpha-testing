@@ -17,6 +17,19 @@ The workflow may use only the task's authorized project scope and tools. Tests o
 
 ${@:-Use the approved plan already present in this conversation. If no approved plan and scope are present, ask for them and do not edit.}
 
+### Plan checkpoint (transient)
+
+Before inspection, check for `AgenticLab/plan-checkpoint.json` at workspace root. If present and its `task` matches the current invocation, treat its contents as the approved plan. If missing, stale, or mismatched, ask the user for the approved plan and do not edit. If the checkpoint is read, delete it at the end of this workflow (after `/premortem` completes).
+
+## Authorization preflight — READ THIS BEFORE PROCEEDING
+
+This workflow requires explicit authorization before any source inspection, command execution, or analysis begins.
+
+- If this invocation was entered directly by the user, proceed after confirming the user's explicit intent to implement.
+- If this invocation was relayed from another agent (e.g., main session) rather than entered by the user, **do not proceed** until the relayed text carries the user's explicit request. If the relay does not quote the user's request verbatim and label the relay as such, ask the user for confirmation before proceeding.
+- A user question about implementing ("can we implement X?", "is X feasible?") is **not** an instruction to implement. Answer the question first; begin implementation only on explicit invocation or approval.
+- If the precondition does not hold, stop and ask the user to clarify their intent.
+
 ## Execution
 
 1. Restate the approved goal, included/excluded scope, validation, and stop conditions briefly. Do not ask a redundant “ready to begin?” question after this explicit invocation.
@@ -29,7 +42,7 @@ ${@:-Use the approved plan already present in this conversation. If no approved 
 
 Carry forward the plan's task-local learning candidates. For each meaningful implementation phase, add only genuinely new, potentially reusable findings with claim, scope, source/evidence and revision where available, uncertainty/status, and reuse reason. If none, say `no new candidate`. At each checkpoint and completion, merge updates into the existing task-local list: deduplicate repeated facts, preserve stronger verification, and state why an earlier candidate was revised or dropped. Compare against authoritative project material when it is within scope; do not re-present an already documented fact as a new discovery.
 
-This handoff is transient task context, not durable memory. Do not write persona memories, logs, checkpoints, or project records automatically. Durable persistence is a separate user decision through the project's approved write gate.
+This handoff is transient task context, not durable memory. Do not write persona memories, logs, or project records automatically. The plan checkpoint (`AgenticLab/plan-checkpoint.json`) is read at start and deleted at end of this workflow; it is not a project record. Durable persistence is a separate user decision through the project's approved write gate.
 
 ## Verification and completion
 

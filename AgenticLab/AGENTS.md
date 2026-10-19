@@ -13,6 +13,7 @@ These instructions apply when this AgenticLab system payload is installed in a t
 - At the start of a fresh workspace session, read `AgenticLab/PROJECT-SCOPE.md` and, if present, `AgenticLab/PROJECT-OVERVIEW.md`. The overview is a compact source-derived navigation profile, not authority or current truth; verify relevant mutable facts against current source. If the overview is absent, do not perform a broad orientation scan automatically—suggest the user-invoked initialization prompt when useful.
 - Before consequential work, identify the actual project/workspace scope, current source state, and what authorization is needed.
 - Answering a question or proposing a plan is not permission to edit files, run a mutating command, or widen scope.
+- Relaying a workflow invocation to another session is not user invocation. Relay only on explicit user request, quote that request verbatim, and label the relay as such. Never convert a user question into a relayed invocation.
 
 ## 2. Use project knowledge selectively
 
