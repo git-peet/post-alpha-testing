@@ -1,0 +1,4 @@
+LOCAL TEST BUILD — NOT A CLEAN SOURCE COMMIT
+Base source commit: 8280a9a0035aca185c9e9d50b729d5da85e9be9b
+Local test patches: quote the YAML description scalar in prompts/system/initialize-workspace.md for Pi parsing; register plan/implement/premortem as opt-in prompts during initialization; update prompt/setup documentation to match.
+Status: uncommitted and unpublished; rebuild from a clean source commit before general distribution.

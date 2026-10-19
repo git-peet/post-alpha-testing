@@ -1,0 +1,7 @@
+{
+  "pendingStagingEnabled": true,
+  "metricsEnabled": true,
+  "scope": "project:post-integration-delivery",
+  "maxCandidates": 10,
+  "requiredFields": ["id", "title", "category", "scope", "status", "source", "recorded"]
+}

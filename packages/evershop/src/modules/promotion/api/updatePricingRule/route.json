@@ -1,0 +1,5 @@
+{
+  "methods": ["PATCH"],
+  "path": "/pricing-rules/:id",
+  "access": "private"
+}

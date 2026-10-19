@@ -1,0 +1,5 @@
+{
+  "methods": ["POST"],
+  "path": "/pricing-rules/:id/archive",
+  "access": "private"
+}

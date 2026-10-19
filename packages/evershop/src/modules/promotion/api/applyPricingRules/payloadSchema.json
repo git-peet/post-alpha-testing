@@ -1,0 +1,8 @@
+{
+  "type": "object",
+  "properties": {
+    "cart_id": { "type": "string", "minLength": 1 }
+  },
+  "required": ["cart_id"],
+  "additionalProperties": false
+}
