@@ -33,4 +33,8 @@ This handoff is transient task context, not durable memory. Do not write persona
 
 ## Verification and completion
 
-Run only the approved, safe validation. If a required test cannot run, report that limitation; do not imply it passed. At completion, report changed paths, tests/checks and results, deviations, unresolved risks, out-of-scope notices, and the consolidated learning handoff. If work is incomplete, give the exact next action and enough state to resume.
+Run only the approved, safe validation. If a required test cannot run, report that limitation; do not imply it passed. At completion, report changed paths, tests/checks and results, deviations, unresolved risks, out-of-scope notices, and the consolidated learning handoff.
+
+> After successful validation, the workflow automatically invokes `/premortem` on the implemented scope to surface high-impact or silent assumptions in the actual code. This read-only analysis runs without requiring a separate user invocation. Report its findings as part of the completion output.
+
+If work is incomplete, give the exact next action and enough state to resume.
