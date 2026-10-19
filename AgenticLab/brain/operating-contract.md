@@ -33,6 +33,10 @@
 - The explicitly invoked first-use initializer may create/update only the reviewed setup/profile files (`AgenticLab/PROJECT-SCOPE.md`, `AgenticLab/PROJECT-OVERVIEW.md`, `.pi/settings.json`, `.pi/APPEND_SYSTEM.md`) after showing a complete preview and receiving approval. These are workspace setup artifacts, not memory records; this narrow setup path does not bypass the knowledge gate or authorize ordinary-task edits to them.
 - Project records remain in the target workspace. AgenticLab design/development history stays in the canonical V5 repository.
 
+## Code and dependency boundaries
+
+Project code may not contain AgenticLab sources, implementations, or direct imports. Any dependencies on AgenticLab functionality must be declared through stable, versioned external interfaces (e.g., npm packages, CLIs) that exist outside the project's direct source tree. The AgenticLab adapter directories (`AgenticLab/adapters/...`) and `.pi/` runtime files remain outside project source; no AgenticLab code should ever be imported, required, copied, or linked into `packages/evershop/src/`, `src/`, or any project code path. Deviations are permitted only as documented exceptions in alpha-sandbox workspaces, with explicit scope, justification, and expiry conditions.
+
 ## First-slice limitation
 
 This contract is used with one Pi workspace and one bounded project task. It does not establish multi-harness parity, general autonomous planning, broad specialist coordination, or a complete security boundary. Those require separate candidates and approvals.
