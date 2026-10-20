@@ -1,0 +1,73 @@
+{
+  "pbi": {
+    "id": "PBI-1",
+    "title": "Dynamic Pricing Rule Builder",
+    "scope": "project:post-integration-delivery"
+  },
+  "status": "implemented",
+  "startedAt": "2026-10-19T11:56:00Z",
+  "completedAt": "2026-10-19T20:30:00Z",
+  "goal": "Enable store operators to create pricing rules with pending/active/archived lifecycle, admin UI, and cart integration via apply-discount endpoint.",
+  "inScope": [
+    "packages/evershop/src/modules/promotion/services/pricingRules/pricingRuleService.ts",
+    "packages/evershop/src/modules/promotion/services/pricingRules/pricingRuleEngine.ts",
+    "packages/evershop/src/modules/promotion/services/pricingRules/pricingRuleSchema.ts",
+    "packages/evershop/src/modules/promotion/services/pricingRules/*.ts",
+    "packages/evershop/src/modules/promotion/admin/pricingRules/"
+  ],
+  "outOfScope": [
+    "External notification on rule events",
+    "Rule versioning / history beyond status",
+    "Promotion-approved / retrieval-success metrics"
+  ],
+  "filesChanged": [
+    "packages/evershop/src/modules/promotion/services/pricingRules/pricingRuleService.ts",
+    "packages/evershop/src/modules/promotion/services/pricingRules/pricingRuleEngine.ts",
+    "packages/evershop/src/modules/promotion/services/pricingRules/pricingRuleSchema.ts",
+    "packages/evershop/src/modules/promotion/services/pricingRules/*.test.ts",
+    "packages/evershop/src/modules/promotion/admin/pricingRules/pages/pricingRules.tsx",
+    "packages/evershop/src/modules/promotion/admin/pricingRules/pages/create.tsx",
+    "packages/evershop/src/modules/promotion/admin/pricingRules/pages/edit.tsx",
+    "packages/evershop/src/modules/cart/services/cartPromotionFields.ts"
+  ],
+  "apiEndpoints": [
+    "POST /api/pricing-rules",
+    "GET /api/pricing-rules",
+    "GET /api/pricing-rules/:id",
+    "POST /api/pricing-rules/:id/approve",
+    "POST /api/pricing-rules/:id/archive",
+    "POST /api/cart/apply-discount"
+  ],
+  "migrations": [
+    "pricing_rules.sql (status: pending/active/archived, unique index on active condition/action)"
+  ],
+  "validation": {
+    "commands": [
+      "npm run test -- pricingRules",
+      "npm run test -- pricingRuleEngine",
+      "npm run test -- pricingRuleSchema",
+      "npm run build"
+    ],
+    "results": [
+      "5 suites, 23 tests passed",
+      "Build successful",
+      "Smoke test: end-to-end lifecycle verified"
+    ]
+  },
+  "risks": [
+    "Duplicate active rule detection returns 409 (expected behavior, not bug)",
+    "Metrics writer outside transaction — loss possible if write fails after commit",
+    "Metrics file corruption if admin tools omit trailing newline"
+  ],
+  "deviations": [
+    "Premortem hardening (metric-in-transaction, file-integrity guard) deferred per user decision"
+  ],
+  "unresolved": [
+    "Permanent metrics-writer robustness not yet addressed",
+    "Knowledge-capture opt-in not yet tested in production"
+  ],
+  "learningCandidates": [
+    "Agent-side metrics emission replaces project-code import (validated by removal of recordCandidateStagedMetric.ts)",
+    "Plan checkpoint + implement record handoff enables /implementation-log without project coupling"
+  ]
+}

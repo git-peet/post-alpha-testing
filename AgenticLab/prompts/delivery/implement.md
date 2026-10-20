@@ -55,3 +55,7 @@ Run only the approved, safe validation. If a required test cannot run, report th
 > After successful validation, the workflow automatically invokes `/premortem` on the implemented scope to surface high-impact or silent assumptions in the actual code. This read-only analysis runs without requiring a separate user invocation. Report its findings as part of the completion output.
 
 If work is incomplete, give the exact next action and enough state to resume.
+
+### Implement record (snapshot, not a project record)
+
+At the end of this workflow, after validation and the automatic `/premortem` review, write `AgenticLab/implementation-logs/<workspace-key>/<pbi-id-slug>/implement-record.json` capturing a structured snapshot of this implementation: pbi id/title/scope, status, startedAt/completedAt, goal, inScope/outOfScope, filesChanged, apiEndpoints, migrations, validation (commands and results), risks, deviations, unresolved items, and learning candidates. The record is a transient hand-off to `/implementation-log`, not a project record: it contains no rule contents, customer data, or cart data. `/implementation-log` reads it and deletes it after rendering `implementation-log.md`. If a `plan-checkpoint.json` was read, fold its scope, validation, and stop conditions into the record before the checkpoint is deleted.
