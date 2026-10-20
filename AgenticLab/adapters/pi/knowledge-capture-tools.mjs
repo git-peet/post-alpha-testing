@@ -8,11 +8,13 @@ import {
   PILOT_SCOPE,
   PILOT_WORKSPACE_ROOT,
   promotePending,
+  readKnowledge,
   setCaptureEnabled,
   stageCandidates,
   validateCandidate,
   validateCandidateBatch,
 } from "./knowledge-capture-core.mjs";
+import { recordKnowledgeCaptureMetric } from "./knowledge-capture-metrics.mjs";
 
 const REVIEW_TTL_MS = 30 * 60 * 1000;
 const MAX_REVIEWS = 32;
@@ -273,6 +275,39 @@ export function registerKnowledgeCaptureTools(pi, Type, StringEnum, { expectedRo
     },
   });
 
+  pi.registerTool({
+    name: "readKnowledgeRecords",
+    label: "Read promoted knowledge records",
+    description: "Browse or search promoted ALPHA-KNOWLEDGE-PILOT-001 records in AgenticLab/knowledge/. Accepts an optional id (exact match) or query (substring match). Returns content-free metadata and the record body for verification only; never emits business data. A retrieval_success metric fires only when at least one promoted record is matched.",
+    parameters: Type.Object({
+      id: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
+      query: Type.Optional(Type.String({ minLength: 1, maxLength: 512 })),
+    }, { additionalProperties: false }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      if (!isPlainObject(params) || !hasOnlyKeys(params, ["id", "query"])) {
+        throw new Error("read tool accepts only id and query");
+      }
+      const result = await readKnowledge(ctx.cwd, { id: params.id, query: params.query }, { expectedRoot });
+      if (result.status === "ok" && result.count > 0) {
+        recordKnowledgeCaptureMetric("retrieval_success", { workspaceRoot: ctx.cwd }).catch(() => {});
+      }
+      const summary = {
+        status: result.status,
+        count: result.count,
+        matches: result.matches?.map((record) => ({
+          id: record.id,
+          title: record.title,
+          category: record.category,
+          scope: record.scope,
+          status: record.status,
+          file: record.file,
+        })) ?? [],
+      };
+      if (result.note) summary.note = result.note;
+      if (result.searched !== undefined) summary.searched = result.searched;
+      return textResult(JSON.stringify(summary, null, 2), summary);
+    },
+  });
   pi.registerCommand("knowledge-opt-in", {
     description: "Explicitly enable candidate staging for ALPHA-KNOWLEDGE-PILOT-001 in this workspace",
     handler: async (_args, ctx) => {

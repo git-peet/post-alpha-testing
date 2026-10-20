@@ -1,28 +1,29 @@
-import { pool } from '../../../lib/postgres/connection';
+import {
+  getInventoryByProduct,
+  getInventoryGrid,
+  InventoryServiceError
+} from '../../services/inventoryService.js';
 
-export default async (request, response) => {
+export default async (request, response, next) => {
   try {
-    const productId = request.query.product_id ? Number(request.query.product_id) : null;
-    let sql = `SELECT i.*, w.name as warehouse_name, w.location, w.timezone FROM inventory i JOIN warehouses w ON i.warehouse_id = w.id WHERE w.is_active = true`;
-    const params: any[] = [];
-    if (productId) {
-      sql += ' AND i.product_id = $1';
-      params.push(productId);
+    const productId = request.query.product_id;
+    if (productId !== undefined) {
+      const rows = await getInventoryByProduct(productId);
+      response.status(200).json({ data: rows });
+      return;
     }
-    sql += ' ORDER BY w.name ASC';
-    const result = await pool.query(sql, params);
-    return response.status(200).json({
-      data: result.rows.map((row) => ({
-        id: row.id,
-        product_id: row.product_id,
-        warehouse_id: row.warehouse_id,
-        warehouse_name: row.warehouse_name,
-        quantity: row.quantity,
-        last_checked_at: row.last_checked_at
-      }))
+    const result = await getInventoryGrid({
+      page: request.query.page,
+      pageSize: request.query.page_size
+    });
+    response.status(200).json({
+      data: result.rows,
+      pagination: { page: result.page, page_size: result.pageSize, total: result.total }
     });
   } catch (error) {
-    console.error('Inventory query error:', error);
-    return response.status(500).json({ error: { message: 'Server error' } });
+    const status = error instanceof InventoryServiceError ? error.statusCode : 500;
+    response.status(status).json({
+      error: { status, message: error instanceof Error ? error.message : 'Unable to load inventory' }
+    });
   }
 };

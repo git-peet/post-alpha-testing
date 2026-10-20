@@ -1,0 +1,1 @@
+Please read the knowledge entry in AgenticLab/knowledge/pbi-2-advisory-lock-concurrency.md and explain how advisory locks are used to serialize concurrent inventory reservations and how to extend testing to 3-5 way concurrency.

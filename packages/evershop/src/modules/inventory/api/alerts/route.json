@@ -1,5 +1,5 @@
 {
   "methods": ["GET"],
-  "path": "/api/alerts",
+  "path": "/alerts",
   "access": "private"
 }

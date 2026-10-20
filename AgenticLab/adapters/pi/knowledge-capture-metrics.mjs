@@ -1,7 +1,11 @@
 import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
 
-const ALLOWED_EVENTS = new Set(["candidate_staged"]);
+const ALLOWED_EVENTS = new Set([
+  "candidate_staged",
+  "decision_knowledge",
+  "retrieval_success"
+]);
 
 export function metricPaths(workspaceRoot = ".") {
   const root = path.resolve(workspaceRoot);
@@ -10,8 +14,8 @@ export function metricPaths(workspaceRoot = ".") {
 }
 
 /**
- * Register the workspace metrics location for the Pi adapter. Pricing-rule
- * events deliberately use the same narrow writer without passing rule data.
+ * Register the workspace metrics location for the Pi adapter. Inventory and
+ * pricing events deliberately share this narrow writer without payload data.
  */
 export function registerKnowledgeCaptureMetrics(_pi, opts = {}) {
   return metricPaths(opts.workspaceRoot || ".");

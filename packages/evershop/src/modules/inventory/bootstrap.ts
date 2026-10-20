@@ -1,10 +1,3 @@
-import { addProcessor } from '@evershop/evershop/lib/util/registry';
-
-export default () => {
-  addProcessor('inventoryLoader', () => {
-    // Placeholder for future inventory loader integration
-  }, 0);
-  addProcessor('inventoryValidator', () => {
-    // Placeholder for future inventory validator integration
-  }, 0);
-};
+export default function inventoryBootstrap(): void {
+  // The inventory module exposes APIs and admin routes; it adds no global processors.
+}

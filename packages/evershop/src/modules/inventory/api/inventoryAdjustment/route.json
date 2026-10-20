@@ -1,0 +1,5 @@
+{
+  "methods": ["POST"],
+  "path": "/inventory/adjust",
+  "access": "private"
+}

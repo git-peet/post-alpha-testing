@@ -578,3 +578,91 @@ export async function promotePending(cwd, confirm, { expectedRoot = PILOT_WORKSP
     };
   });
 }
+
+const MAX_RETRIEVAL_RESULTS = 20;
+const MAX_RETRIEVAL_BYTES = 64 * 1024;
+
+function parseFrontMatter(text) {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text);
+  if (!match) return { meta: {}, body: text };
+  const meta = {};
+  for (const line of match[1].split(/\r?\n/)) {
+    const field = /^([A-Za-z][A-Za-z0-9_-]*):\s*(.*)$/.exec(line);
+    if (!field) continue;
+    meta[field[1]] = field[2].trim().replace(/^["']|["']$/g, "");
+  }
+  return { meta, body: text.slice(match[0].length) };
+}
+
+export async function readKnowledge(cwd, { id, query, limit = MAX_RETRIEVAL_RESULTS } = {}, { expectedRoot = PILOT_WORKSPACE_ROOT } = {}) {
+  const locations = await resolvePilotLocations(cwd, expectedRoot);
+  const activeStat = await lstatOrNull(locations.activeRoot);
+  if (!activeStat || !activeStat.isDirectory() || activeStat.isSymbolicLink() || await fs.realpath(locations.activeRoot) !== locations.activeRoot) {
+    return { status: "no_knowledge_store", matches: [], count: 0, note: "no promoted knowledge records exist in this workspace" };
+  }
+
+  const directory = await fs.opendir(locations.activeRoot);
+  const files = [];
+  for await (const entry of directory) {
+    if (!entry.isFile() || entry.isSymbolicLink()) continue;
+    if (!entry.name.endsWith(".md")) continue;
+    if (entry.name === "INDEX.md") continue;
+    files.push(entry.name);
+  }
+  files.sort();
+
+  const records = [];
+  let bytesRead = 0;
+  for (const name of files) {
+    const filePath = path.join(locations.activeRoot, name);
+    let text;
+    try {
+      text = await readBoundedRegularFile(filePath, MAX_RECORD_BYTES);
+    } catch {
+      continue;
+    }
+    bytesRead += Buffer.byteLength(text, "utf8");
+    if (bytesRead > MAX_RETRIEVAL_BYTES) break;
+    const { meta, body } = parseFrontMatter(text);
+    records.push({
+      id: meta.id || name.replace(/\.md$/u, ""),
+      title: meta.title || "",
+      category: meta.category || "",
+      scope: meta.scope || "",
+      status: meta.status || "active",
+      file: name,
+      content: text,
+      body,
+    });
+  }
+
+  if (typeof id === "string" && id.trim()) {
+    const wanted = id.trim().replace(/\.md$/u, "");
+    const exact = records.filter((record) => record.id === wanted || record.file === `${wanted}.md`);
+    if (exact.length === 0) {
+      return { status: "not_found", matches: [], count: 0, note: `no promoted record with id "${wanted}"`, available: records.map((record) => record.id) };
+    }
+    return { status: "ok", matches: exact, count: exact.length };
+  }
+
+  if (typeof query === "string" && query.trim()) {
+    const needle = query.trim().toLowerCase();
+    const terms = needle.split(/\s+/u).filter(Boolean);
+    const scored = records
+      .map((record) => {
+        const haystack = `${record.id}\n${record.title}\n${record.category}\n${record.scope}\n${record.content}`.toLowerCase();
+        const hits = terms.filter((term) => haystack.includes(term)).length;
+        return { record, hits };
+      })
+      .filter((entry) => entry.hits > 0)
+      .sort((a, b) => b.hits - a.hits || a.record.id.localeCompare(b.record.id))
+      .slice(0, Math.max(1, Math.min(limit, MAX_RETRIEVAL_RESULTS)))
+      .map((entry) => entry.record);
+    if (scored.length === 0) {
+      return { status: "no_match", matches: [], count: 0, note: "no promoted record matched the query", searched: records.length };
+    }
+    return { status: "ok", matches: scored, count: scored.length, searched: records.length };
+  }
+
+  return { status: "ok", matches: records.slice(0, Math.max(1, Math.min(limit, MAX_RETRIEVAL_RESULTS))), count: records.length };
+}

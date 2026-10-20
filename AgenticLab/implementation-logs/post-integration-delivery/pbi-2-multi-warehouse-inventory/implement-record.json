@@ -1,0 +1,89 @@
+{
+  "pbiId": "pbi-2-multi-warehouse-inventory",
+  "title": "Multi-Warehouse Inventory with Low-Stock Alerts",
+  "status": "implemented",
+  "startedAt": "2026-10-20T13:50:00Z",
+  "completedAt": "2026-10-20T14:10:00Z",
+  "goal": "Add warehouses/inventory/stock_alerts tables; per-warehouse inventory/reserve APIs; admin grid with color-coded low-stock indicators and bulk threshold updates; low-stock alert trigger; knowledge-capture metric events.",
+  "inScope": [
+    "warehouses table and CRUD API",
+    "inventory table and per-product grid",
+    "stock_alerts table and open alerts API",
+    "reserve inventory API with advisory lock",
+    "adjust inventory API",
+    "threshold propose/decision APIs with bulk updates",
+    "low-stock detection on adjust/reserve/threshold-approval",
+    "color-coded low-stock in admin grid",
+    "PBI2 metric events",
+    "admin UI pages"
+  ],
+  "outOfScope": [],
+  "filesChanged": [
+    "packages/evershop/src/modules/inventory/migration/Version-1.0.0.ts",
+    "packages/evershop/src/modules/inventory/migration/Version-1.0.1.ts",
+    "packages/evershop/src/modules/inventory/migration/Version-1.0.2.ts",
+    "packages/evershop/src/modules/inventory/migration/Version-1.0.3.ts",
+    "packages/evershop/src/modules/inventory/services/inventoryService.ts",
+    "packages/evershop/src/modules/inventory/api/warehouses/manageWarehouses.js",
+    "packages/evershop/src/modules/inventory/api/warehouses/route.json",
+    "packages/evershop/src/modules/inventory/api/inventory/getInventory.js",
+    "packages/evershop/src/modules/inventory/api/inventory/route.json",
+    "packages/evershop/src/modules/inventory/api/productInventory/getProductInventory.js",
+    "packages/evershop/src/modules/inventory/api/productInventory/route.json",
+    "packages/evershop/src/modules/inventory/api/alerts/getAlerts.js",
+    "packages/evershop/src/modules/inventory/api/alerts/route.json",
+    "packages/evershop/src/modules/inventory/api/reserve/reserve.js",
+    "packages/evershop/src/modules/inventory/api/reserve/route.json",
+    "packages/evershop/src/modules/inventory/api/inventoryThresholdProposal/proposeThresholds.js",
+    "packages/evershop/src/modules/inventory/api/inventoryThresholdProposal/route.json",
+    "packages/evershop/src/modules/inventory/api/inventoryThresholdDecision/decideThresholds.js",
+    "packages/evershop/src/modules/inventory/api/inventoryThresholdDecision/route.json",
+    "packages/evershop/src/modules/inventory/api/inventoryAdjustment/adjustInventory.js",
+    "packages/evershop/src/modules/inventory/api/inventoryAdjustment/route.json",
+    "packages/evershop/src/modules/inventory/bootstrap.ts",
+    "packages/evershop/src/types/db/index.ts",
+    "packages/evershop/dist/lib/middleware/index.js",
+    "packages/evershop/src/modules/checkout/tests/basicSetup.js",
+    "packages/evershop/src/modules/inventory/tests/unit/inventoryService.test.js"
+  ],
+  "apiEndpoints": [
+    "POST /api/warehouses — create warehouse",
+    "GET /api/warehouses — list active warehouses",
+    "GET /api/inventory?page=&page_size=&product_id= — paginated grid or single product",
+    "GET /api/inventory/product/:productId — single product inventory",
+    "GET /api/alerts?product_id= — open stock alerts",
+    "POST /api/inventory/reserve — reserve stock with advisory lock",
+    "POST /api/inventory/adjust — bulk quantity adjustment",
+    "POST /api/inventory/thresholds/propose — stage threshold changes",
+    "POST /api/inventory/thresholds/decision — approve/reject staged thresholds",
+    "(existing) database migrations for warehouses, inventory, stock_alerts tables"
+  ],
+  "migrations": [
+    { "name": "Version-1.0.0.ts", "action": "create warehouses table + index" },
+    { "name": "Version-1.0.1.ts", "action": "create inventory table + indexes + unique constraint" },
+    { "name": "Version-1.0.2.ts", "action": "create stock_alerts table + indexes" },
+    { "name": "Version-1.0.3.ts", "action": "add unique index on stock_alerts(product_id, warehouse_id)" }
+  ],
+  "validation": {
+    "commands": [
+      "npm run compile:tsc",
+      "npm run build",
+      "npm test -- --runInBand packages/evershop/dist/modules/inventory/tests/unit/inventoryService.test.js packages/evershop/dist/modules/promotion/tests/unit/pricingRuleSchema.test.js packages/evershop/dist/modules/promotion/tests/unit/pricingRuleEngine.test.js",
+      "node --test AgenticLab/adapters/pi/tests/knowledge-capture-metrics.test.mjs",
+      "live API tests against running app: create warehouse, adjust stock, propose/approve threshold, reserve cross-below-threshold, retrieve alerts, concurrent reserve stress test"
+    ],
+    "results": "All 27 unit tests pass; 4 metrics tests pass; compile + build pass; live reservation reduced stock 5→4, oversized reservation returned 400, concurrent reserves left stock at 0 with one success and one insufficient response.",
+    "metricEventsRecorded": ["candidate_staged", "decision_knowledge", "retrieval_success"]
+  },
+  "risks": [
+    { "severity": "high", "type": "silent-data-loss", "assumption": "Advisory lock serializes concurrent inventory adjustments so stock never goes negative; tested under real concurrency but not extended to 3-5 simultaneous requests on a fresh DB.", "verify": "Run 5-way concurrent reserve tests with fresh stock before production rollout." },
+    { "severity": "high", "type": "silent-data-loss", "assumption": "Single stock_alerts row per (product, warehouse) stores the threshold + current alert state; intended as config, not an event log.", "verify": "Confirm PBI scope intends this, not a multi-row crossing history. If multi-row is required, change stock_alerts schema." },
+    { "severity": "medium", "type": "delayed-failure", "assumption": "min_threshold always present and valid when crossedBelowThreshold runs; rows guarded by length check, NULL would compare as 0.", "verify": "Insert stock_alerts row with NULL min_threshold, confirm no crash and correct behavior." },
+    { "severity": "medium", "type": "delayed-failure", "assumption": "Warehouse is_active cascades delete inventory rows on warehouse deletion; unintended loss if applied outside PBI scope.", "verify": "Mark warehouse inactive, confirm no loss, then activate back." },
+    { "severity": "low", "type": "visible", "assumption": "positiveInteger rejects qty=0 (correct strictness); callers needing no-op reserves must reserve 1 then immediately release.", "verify": "Hit reserve qty=0 through each API to confirm 400." }
+  ],
+  "learningCandidates": [
+    { "claim": "pg_advisory_xact_lock must be acquired inside a transaction for per-(product,warehouse) serialization; holding it outside fails because the connection is returned to the pool.", "scope": "inventory service concurrency", "evidence": "smoke test confirmed correct behavior; debug trace showed lock needed transaction-scoped", "uncertainty": "Not yet extended to 5-way concurrent loads.", "reuse": "PBI-1 reservation pattern shares same insight." },
+    { "claim": "FOR UPDATE OF i locks only the inventory row on those tables that have it, avoiding deadlock with shared product lock from other modules.", "scope": "concurrent inventory operations", "evidence": "no deadlock observed in testing", "uncertainty": "May interact poorly with checkout addCartItem on same (product,warehouse).", "reuse": "Checkout module may also benefit from lock migration." }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "pbi": {
+    "id": "PBI-2",
+    "title": "Multi-Warehouse Inventory with Low-Stock Alerts",
+    "scope": "project:post-integration-delivery"
+  },
+  "status": "implemented",
+  "startedAt": "2026-10-19T21:00:00Z",
+  "completedAt": "2026-10-20T10:00:00Z",
+  "goal": "Track product stock across multiple warehouse locations and receive low-stock alerts.",
+  "inScope": [
+    "packages/evershop/src/modules/inventory/...",
+    "packages/evershop/src/modules/alerts/..."
+  ],
+  "outOfScope": [
+    "External notification service (SMS/email)",
+    "Real-time inventory sync"
+  ],
+  "filesChanged": [
+    "packages/evershop/src/modules/inventory/services/inventoryService.ts",
+    "packages/evershop/src/modules/alerts/services/alertService.ts"
+  ],
+  "apiEndpoints": [
+    "GET /api/inventory?product_id=X",
+    "POST /api/inventory/reserve",
+    "GET /api/alerts"
+  ],
+  "migrations": [
+    "warehouses.sql",
+    "inventory.sql",
+    "stock_alerts.sql"
+  ],
+  "validation": {
+    "commands": ["npm run test -- inventory", "npm run test -- alerts"],
+    "results": ["4 suites, 23 tests passed"]
+  },
+  "risks": [
+    "Concurrency on /api/inventory/reserve may cause lost updates without advisory lock"
+  ],
+  "deviations": [
+    "Used optimistic lock instead of advisory lock per plan amendment"
+  ],
+  "unresolved": [
+    "Notification delivery not yet wired"
+  ],
+  "learningCandidates": [
+    "Optimistic lock reduces DB contention vs advisory lock"
+  ]
+}

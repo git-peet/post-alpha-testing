@@ -1,5 +1,1 @@
-{
-  "methods": ["POST"],
-  "path": "/inventory/reserve",
-  "access": "private"
-}
+{"methods": ["POST"], "path": "/inventory/reserve", "access": "private"}

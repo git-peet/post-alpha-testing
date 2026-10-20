@@ -94,15 +94,33 @@ export async function classifyPilotPolicyMutation(toolName, input, cwd) {
   return null;
 }
 
+const READ_ONLY_SHELL_COMMANDS = new Set([
+  "ls", "cat", "less", "more", "head", "tail", "grep", "find", "read", "sed", "awk", "wc", "file", "stat", "realpath", "dirname", "basename"
+]);
+
+function isReadOnlyShellCommand(command) {
+  const normalized = command.trim().replaceAll("\\", "/");
+  const firstWord = normalized.split(/[\s]+/u)[0];
+  if (!firstWord) return false;
+  return READ_ONLY_SHELL_COMMANDS.has(firstWord.toLowerCase());
+}
+
 export async function shellReferencesKnowledge(cwd, command) {
   if (typeof command !== "string" || !command.trim() || typeof cwd !== "string") return false;
   const normalized = command.replaceAll("\\", "/");
   const knowledgeRoot = path.resolve(cwd, KNOWLEDGE_RELATIVE_PATH).replaceAll("\\", "/");
   const pendingRoot = path.resolve(cwd, PENDING_RELATIVE_PATH).replaceAll("\\", "/");
   const policyPath = path.resolve(cwd, POLICY_RELATIVE_PATH).replaceAll("\\", "/");
-  if (normalized.includes(knowledgeRoot) || normalized.includes("AgenticLab/knowledge")) return true;
-  if (normalized.includes(pendingRoot) || normalized.includes("knowledge-pending")) return true;
-  if (normalized.includes(policyPath) || normalized.includes("knowledge-capture-policy.json") || normalized.includes(".knowledge-promotion-committed.json")) return true;
+
+  const mentionsKnowledge = normalized.includes(knowledgeRoot) || normalized.includes("AgenticLab/knowledge");
+  const mentionsPending = normalized.includes(pendingRoot) || normalized.includes("knowledge-pending");
+  const mentionsPolicy = normalized.includes(policyPath) || normalized.includes("knowledge-capture-policy.json") || normalized.includes(".knowledge-promotion-committed.json");
+
+  // Read-only shell access to active knowledge records is allowed for retrieval.
+  // Only writes/mutations go through the preview+confirmation gate.
+  if (mentionsKnowledge && isReadOnlyShellCommand(command)) return false;
+
+  if (mentionsKnowledge || mentionsPending || mentionsPolicy) return true;
 
   // Resolve ordinary path-shaped shell arguments so a symlink alias into the private queue does
   // not bypass the lexical check. This intentionally is not a shell parser or OS sandbox.
@@ -117,7 +135,13 @@ export async function shellReferencesKnowledge(cwd, command) {
     const target = path.resolve(cwd, token);
     const canonicalTarget = await resolveThroughExistingSymlinks(target);
     if (pathsIntersect(path.resolve(cwd, PENDING_RELATIVE_PATH), target) || pathsIntersect(canonicalPending, canonicalTarget) ||
-      pathsIntersect(path.resolve(cwd, KNOWLEDGE_RELATIVE_PATH), target) || pathsIntersect(canonicalKnowledge, canonicalTarget)) return true;
+      pathsIntersect(path.resolve(cwd, KNOWLEDGE_RELATIVE_PATH), target) || pathsIntersect(canonicalKnowledge, canonicalTarget)) {
+      // Allow read-only token access to knowledge records
+      if (pathsIntersect(path.resolve(cwd, KNOWLEDGE_RELATIVE_PATH), target) || pathsIntersect(canonicalKnowledge, canonicalTarget)) {
+        return false;
+      }
+      return true;
+    }
   }
 
   // Conservative lexical fallback for common `cd AgenticLab && ...` forms. Arbitrary shell
@@ -127,8 +151,14 @@ export async function shellReferencesKnowledge(cwd, command) {
   const cwdIsInPackage = isWithin(projectPackage, path.resolve(cwd));
   const cwdIsInPending = isWithin(path.resolve(cwd, PENDING_RELATIVE_PATH), path.resolve(cwd));
   const mentionsPackage = words.includes("AgenticLab");
-  return (mentionsPackage && (words.includes("knowledge") || words.includes("knowledge-pending") || words.includes("knowledge-capture-policy.json"))) ||
-    (cwdIsInPackage && (words.includes("knowledge") || words.includes("knowledge-pending") || words.includes("knowledge-capture-policy.json"))) ||
+  const mentionsKnowledgeWords = words.includes("knowledge") || words.includes("knowledge-pending") || words.includes("knowledge-capture-policy.json");
+
+  // Read-only lexical access to active knowledge is allowed
+  if (mentionsPackage && mentionsKnowledgeWords && isReadOnlyShellCommand(command)) return false;
+  if (cwdIsInPackage && mentionsKnowledgeWords && isReadOnlyShellCommand(command)) return false;
+
+  return (mentionsPackage && mentionsKnowledgeWords) ||
+    (cwdIsInPackage && mentionsKnowledgeWords) ||
     cwdIsInPending;
 }
 

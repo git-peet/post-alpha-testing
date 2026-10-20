@@ -33,6 +33,26 @@ test("writes only the allowlisted event and timestamp when metrics are enabled",
   }
 });
 
+test("allows inventory decision and retrieval events without payload fields", async () => {
+  const root = await makeWorkspace(true);
+  try {
+    for (const eventName of ["decision_knowledge", "retrieval_success"]) {
+      await recordKnowledgeCaptureMetric(eventName, { workspaceRoot: root });
+    }
+    const lines = (await readFile(path.join(root, ".pi", "metrics", "agenticlab.jsonl"), "utf8"))
+      .trim()
+      .split("\n");
+    assert.equal(lines.length, 2);
+    for (const line of lines) {
+      const event = JSON.parse(line);
+      assert.ok(["decision_knowledge", "retrieval_success"].includes(event.event));
+      assert.deepEqual(Object.keys(event).sort(), ["event", "occurredAt"]);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("does not write when metrics are disabled", async () => {
   const root = await makeWorkspace(false);
   try {

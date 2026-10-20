@@ -401,6 +401,44 @@ export type PricingRuleInsert = Omit<PricingRuleRow, 'id' | 'created_at' | 'upda
 export type PricingRuleUpdate = Partial<Omit<PricingRuleRow, 'id' | 'created_at'>>;
 
 // =============================================================================
+// INVENTORY (PBI-2 multi-warehouse)
+// =============================================================================
+
+export interface WarehouseRow {
+  id: number;
+  name: string;
+  location: string;
+  timezone: string;
+  is_active: boolean;
+  created_at: Date;
+  updated_at: Date;
+}
+export type WarehouseInsert = Omit<WarehouseRow, 'id' | 'created_at' | 'updated_at'>;
+export type WarehouseUpdate = Partial<Omit<WarehouseRow, 'id' | 'created_at'>>;
+
+export interface InventoryRow {
+  id: number;
+  product_id: number;
+  warehouse_id: number;
+  quantity: number;
+  last_checked_at: Date;
+}
+export type InventoryInsert = Omit<InventoryRow, 'id' | 'last_checked_at'>;
+export type InventoryUpdate = Partial<Omit<InventoryRow, 'id' | 'last_checked_at'>>;
+
+export interface StockAlertRow {
+  id: number;
+  product_id: number;
+  warehouse_id: number;
+  min_threshold: number;
+  alert_sent: boolean;
+  created_at: Date;
+  updated_at: Date;
+}
+export type StockAlertInsert = Omit<StockAlertRow, 'id' | 'created_at' | 'updated_at'>;
+export type StockAlertUpdate = Partial<Omit<StockAlertRow, 'id' | 'created_at'>>;
+
+// =============================================================================
 // CUSTOMER
 // =============================================================================
 
