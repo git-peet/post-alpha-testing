@@ -1,7 +1,6 @@
 import { execute } from '@evershop/postgres-query-builder';
-import type { PoolClient } from '@evershop/postgres-query-builder';
 
-export default async (connection: PoolClient): Promise<void> => {
+export default async (connection: any) => {
   await execute(
     connection,
     `CREATE TABLE pricing_rules (
@@ -24,8 +23,6 @@ export default async (connection: PoolClient): Promise<void> => {
     `CREATE INDEX pricing_rules_status_priority_idx
        ON pricing_rules(status, priority, id)`
   );
-  // JSONB equality is structural, so object key order does not allow duplicate
-  // active rules. Pending and archived duplicates remain available for review/history.
   await execute(
     connection,
     `CREATE UNIQUE INDEX pricing_rules_active_condition_action_unique

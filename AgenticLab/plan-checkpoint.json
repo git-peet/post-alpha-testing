@@ -1,0 +1,57 @@
+{
+  "phase": "plan",
+  "status": "approved",
+  "task": "PBI-2 Multi-Warehouse Inventory with Low-Stock Alerts",
+  "approvedAt": "2026-10-19T22:40:00+02:00",
+  "scope": "project:post-integration-delivery",
+  "summary": "Add multi-warehouse inventory to EverShop: warehouses/inventory/stock_alerts tables, per-warehouse inventory + reserve + alerts APIs, admin grid with color-coded low-stock indicators and bulk threshold updates, low-stock alert trigger, and knowledge-capture metric events.",
+  "inScope": [
+    "packages/evershop/src/modules/inventory/migration/Version-1.0.0.ts (warehouses table)",
+    "packages/evershop/src/modules/inventory/migration/Version-1.0.1.ts (inventory table)",
+    "packages/evershop/src/modules/inventory/migration/Version-1.0.2.ts (stock_alerts table)",
+    "packages/evershop/src/modules/inventory/api/inventory (GET /api/inventory?product_id)",
+    "packages/evershop/src/modules/inventory/api/reserve (POST /api/inventory/reserve, advisory lock)",
+    "packages/evershop/src/modules/inventory/api/alerts (GET /api/alerts, unprocessed only)",
+    "packages/evershop/src/modules/inventory/services (warehouse/inventory validation, alert creation, threshold update)",
+    "packages/evershop/src/modules/inventory/bootstrap.ts (module registration)",
+    "packages/evershop/src/modules/inventory/pages/admin/inventoryGrid (per-warehouse table, color-coded low-stock)",
+    "packages/evershop/src/modules/inventory/pages/admin/inventoryEdit (threshold edit, bulk update)",
+    "packages/evershop/src/types/db/index.ts (warehouse/inventory/stock_alert row types)",
+    "knowledge-capture metric events: candidate_staged (threshold proposed), decision_knowledge (approve/reject), retrieval_success (alert history audit)"
+  ],
+  "outOfScope": [
+    "Deprecating or rewriting the existing catalog product_inventory table in this pass (keep both; migrate later)",
+    "Order-fulfillment warehouse-selection algorithm (per-warehouse API only; selection decided later)",
+    "Customer-facing storefront stock display changes",
+    "External notification/email providers for stock alerts (alert_sent flag only)",
+    ".env access, production or customer data, protected-data bypass",
+    "Persisting rule/threshold contents as AgenticLab durable knowledge records"
+  ],
+  "validation": [
+    "npm run compile:tsc passes",
+    "npm run build passes (client + server bundles, GraphQL query bundles generated for new admin pages)",
+    "unit tests for inventory service, alert trigger, and reserve concurrency pass",
+    "GET /api/inventory?product_id=X returns per-warehouse quantities",
+    "POST /api/inventory/reserve succeeds with sufficient stock and fails with insufficient stock",
+    "GET /api/alerts returns only alert_sent=false rows",
+    "admin grid renders per-warehouse columns with color-coded low-stock indicators",
+    "metrics file contains only allowlisted events with no rule/threshold/product data"
+  ],
+  "stopConditions": [
+    "plan contradicts current source (e.g. product_inventory structure differs from inspected state)",
+    "any test or build failure",
+    "metrics leak threshold, product, customer, or warehouse contents",
+    "reserve endpoint can oversell stock under concurrency",
+    "migration would drop or corrupt existing product_inventory data"
+  ],
+  "decisions": [
+    "New dedicated inventory module (packages/evershop/src/modules/inventory) rather than extending catalog",
+    "Existing product_inventory table is kept untouched in this pass; new inventory table is additive",
+    "Reserve uses PostgreSQL advisory lock scoped to (product_id, warehouse_id) as the PBI specifies",
+    "Low-stock detection is crossing-based (quantity < min_threshold) and creates a stock_alert row",
+    "Knowledge-capture integration follows the PBI-1 pattern: narrow allowlisted writer, event + timestamp only, no payload",
+    "Admin UI follows the promotion module convention (grid + shared edit/new form folder)",
+    "Warehouse management (create/edit warehouses) is admin-only and gated by existing auth middleware"
+  ],
+  "planPath": "AgenticLab/prompts/delivery/plan.md"
+}

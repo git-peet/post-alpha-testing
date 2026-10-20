@@ -26,8 +26,31 @@ Line text removed:
 {"event":"candidate_staged","occurredAt":"2026-10-19T11:58:37.557Z"}{"event":"candidate_staged","occurredAt":"2026-10-19T20:23:10.225Z"}
 ```
 
+## Line 3 (legacy entries from retired project-code mechanism)
+
+**Reason:** Valid JSON, but retired by design. These 4 events were emitted by the
+project-code import `packages/evershop/src/modules/promotion/services/pricingRules/recordCandidateStagedMetric.ts`,
+which violated the operating-contract "Code and dependency boundaries" rule
+(project code must not contain AgenticLab code). That import was removed on
+2026-10-20; metrics are now emitted agent-side from the `/plan`, `/implement`,
+and `/premortem` workflow prompts only.
+
+These entries measured **business events** (pricing rule creation), not knowledge-capture
+activity, so they were not comparable with agent-side events and are not valid measurement
+data for the mechanism. Removed to avoid conflating the two designs.
+
+**Events removed:**
+```json
+{"event":"candidate_staged","occurredAt":"2026-10-19T11:56:57.001Z"}
+{"event":"candidate_staged","occurredAt":"2026-10-19T11:58:37.557Z"}
+{"event":"candidate_staged","occurredAt":"2026-10-19T20:23:10.225Z"}
+{"event":"candidate_staged","occurredAt":"2026-10-19T20:23:58.242Z"}
+```
+
 ## Notes
 
 - Never rejected, never tampered with. Isolated here for audit; no runtime event author used these.
-- The remaining 4 lines in `agenticlab.jsonl` are all valid JSON with only `event` and `occurredAt` keys.
-- All events are `candidate_staged` — no `promotion_approved`, no `retrieval_success`, no rule data.
+- `agenticlab.jsonl` is now empty (0 bytes) and reserved for agent-side events only, emitted by the
+  workflow prompts after a knowledge candidate is staged.
+- All retained events are `candidate_staged` — no `promotion_approved`, no `retrieval_success`,
+  no rule data.
