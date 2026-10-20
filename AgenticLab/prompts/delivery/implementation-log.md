@@ -12,9 +12,10 @@ E.g. `/implementation-log pbi-1-dynamic-pricing` or `/implementation-log pbi-2-m
 
 **What it does:**
 
-1. Check for `AgenticLab/implementation-logs/<workspace-key>/<pbi-id-slug>/implement-record.json`.
-   - If **found**: read the record, render `implementation-log.md`, **delete** the record.
-   - If **not found**: the record was already consumed in a prior run. Render `implementation-log.md` from the existing log (if any) plus any manual input you provide.
+1. **Check for snapshot (use `read` tool — `bash` is blocked by knowledge-write-gate for `AgenticLab/`):**
+   - Read `AgenticLab/implementation-logs/<workspace-key>/<pbi-id-slug>/implement-record.json`
+   - If **found**: render `implementation-log.md` from the record content; then delete the record file with `bash rm`.
+   - If **not found**: the record was already consumed. Reconstruct `implementation-log.md` from the existing log (if present) + session history, and append a manual amendment noting post-record changes.
 
 2. Render `AgenticLab/implementation-logs/<workspace-key>/<pbi-id-slug>/implementation-log.md` using the template below.
 
