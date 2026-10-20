@@ -71,6 +71,10 @@ At meaningful analysis/handoff points, record only potentially reusable findings
 
 Carry forward candidates already present in the conversation/plan, merge duplicates, and update their evidence/status rather than repeating them. Check relevant authoritative project material for an existing equivalent before proposing a candidate. Mark `none` if nothing qualifies. Do not write persona-owned memory, session logs, or project records automatically. A plan checkpoint artifact may be written after explicit user approval at the end of /plan, and must be read and deleted by /implement on completion. The checkpoint is transient and does not persist beyond the current phase. Durable knowledge is a separate user-approved operation through the project's existing gate.
 
+### Metrics and staging checkpoint (agent side, not project code)
+
+When the plan's task-local learning handoff contains one or more candidates (after deduplication and verification against authoritative sources), the agent uses the AgenticLab knowledge-capture adapter (`AgenticLab/adapters/pi/knowledge-capture-tools.mjs`) to stage them as pending records in `AgenticLab/knowledge/`. The agent then emits one `candidate_staged` metric via `AgenticLab/adapters/pi/knowledge-capture-metrics.mjs` to `.pi/metrics/agenticlab.jsonl` (only `event` and `occurredAt`; no business data, rule details, or customer/cart content). This observation confirms the mechanism is active. The staged candidates remain pending until promoted by an explicit user-approved action (e.g., via `/knowledge-opt-in` or equivalent). This replaces the need for any import from `packages/evershop/src/` to emit metrics.
+
 ## 5. Resolve blockers and request approval once
 
 If a decision materially blocks a safe plan, pause and ask the focused question before finalizing. Otherwise present the complete plan, including validation and the task-local learning handoff, and ask one consolidated question:

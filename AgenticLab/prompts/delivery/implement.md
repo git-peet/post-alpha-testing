@@ -44,6 +44,10 @@ Carry forward the plan's task-local learning candidates. For each meaningful imp
 
 This handoff is transient task context, not durable memory. Do not write persona memories, logs, or project records automatically. The plan checkpoint (`AgenticLab/plan-checkpoint.json`) is read at start and deleted at end of this workflow; it is not a project record. Durable persistence is a separate user decision through the project's approved write gate.
 
+### Metrics and staging checkpoint (agent side, not project code)
+
+When the task-local learning handoff contains one or more candidates (after deduplication and verification against authoritative sources), the agent uses the AgenticLab knowledge-capture adapter (`AgenticLab/adapters/pi/knowledge-capture-tools.mjs`) to stage them as pending records in `AgenticLab/knowledge/`. The agent then emits one `candidate_staged` metric via `AgenticLab/adapters/pi/knowledge-capture-metrics.mjs` to `.pi/metrics/agenticlab.jsonl` (only `event` and `occurredAt`; no business data, rule details, or customer/cart content). This observation confirms the mechanism is active. The staged candidates remain pending until promoted by an explicit user-approved action (e.g., via `/knowledge-opt-in` or equivalent). This replaces the need for any import from `packages/evershop/src/` to emit metrics.
+
 ## Verification and completion
 
 Run only the approved, safe validation. If a required test cannot run, report that limitation; do not imply it passed. At completion, report changed paths, tests/checks and results, deviations, unresolved risks, out-of-scope notices, and the consolidated learning handoff.
