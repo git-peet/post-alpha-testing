@@ -7,7 +7,6 @@ import {
 } from '@evershop/postgres-query-builder';
 import { getConnection, pool } from '../../../../lib/postgres/connection.js';
 import type { PricingRuleRow } from '../../../../types/db/index.js';
-import { recordCandidateStagedMetric } from './recordCandidateStagedMetric.js';
 import {
   normalizePricingRuleInput,
   PricingRuleInput
@@ -68,7 +67,6 @@ export async function createPricingRule(input: PricingRuleInput): Promise<Pricin
     await rollback(connection);
     throw error;
   }
-  await recordCandidateStagedMetric();
   return rule;
 }
 
