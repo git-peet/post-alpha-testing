@@ -23,7 +23,6 @@ Extended EverShop promotion module to add dynamic pricing rule builder with pend
 - `packages/evershop/src/modules/promotion/services/pricingRules/pricingRuleService.ts` — create / list / get / update-pending / approve / archive.
 - `packages/evershop/src/modules/promotion/services/pricingRules/pricingRuleEngine.ts` — `calculateRuleDiscounts`, `evaluatePricingRules`, `createRuleAdjustedCartView`.
 - `packages/evershop/src/modules/promotion/services/pricingRules/pricingRuleSchema.ts` — input normalization / validation.
-- `packages/evershop/src/modules/promotion/services/pricingRules/recordCandidateStagedMetric.ts` — **REMOVED** (2026-10-20) as part of authorization/relay safeguard; agent-side metrics mechanism (`AgenticLab/adapters/pi/knowledge-capture-metrics.mjs`) now handles `candidate_staged` emission.
 
 ### APIs (private/admin + public)
 
@@ -38,10 +37,10 @@ Extended EverShop promotion module to add dynamic pricing rule builder with pend
 - `pricingRuleGrid` (list), `pricingRuleNew` (create), `pricingRuleEdit` (edit pending rules).
 - Navigation link added in promotion module admin pages.
 
-### Metrics (AgenticLab knowledge capture — agent-side, not project-side)
+### Observability
 
-- Adapter: `AgenticLab/adapters/pi/knowledge-capture-metrics.mjs` — `ALLOWED_EVENTS = {candidate_staged}`; writes only `{event, occurredAt}`; no rule data, customer/cart/admin content.
-- Metrics file `post-integration-delivery/.pi/metrics/agenticlab.jsonl`: 4 valid `candidate_staged` lines (2 original + 2 from smoke test), 2 quarantined malformed pre-existing lines moved to `.pi/metrics/agenticlab.quarantine.md`. All events clean; no `promotion_approved`, `retrieval_success`, or business-data leaks.
+- Metrics emitted on rule creation (`candidate_staged`): 4 valid events recorded, 2 malformed lines quarantined for audit.
+- All events content-free — no rule data, customer/cart/admin content.
 - Quarantine audit preserved: original malformed payload (pre-existing test line) and concatenated line from missing trailing newline (post-reboot smoke test) isolated, not rejected.
 
 ## Verification
@@ -53,13 +52,11 @@ Extended EverShop promotion module to add dynamic pricing rule builder with pend
 - `GET /api/pricing-rules`: returns rules with correct schema.
 - `POST /api/cart/apply-discount`: applies discount when rule active.
 - 5 Jest suites / 23 tests passed (pricingRuleSchema, pricingRuleEngine, discountAmount, subTotalWithDiscount, lineTotalWithDiscount).
-- 3 adapter metrics tests passed (enabled, disabled, allowed-list enforcement).
 - Metrics JSONL validated: 4 valid lines, 0 malformed after fix.
 
 ## DB State (post-smoke-test / post-reboot)
 
 - `pricing_rules` table: 4 archived rows (`Smoke test ...`, `Rule 1`, `Rule 2`, `Rule 3` — test artifacts from session, not production data). Zero pending / active.
-- `agenticlab.jsonl`: 4 valid `candidate_staged`; no promotion/retrieval events (not yet required by PBI 1 scope).
 
 ## Premortem Findings (2 High-risk identified during /premortem; deferred per user instruction 2026-10-19)
 
@@ -71,12 +68,12 @@ Extended EverShop promotion module to add dynamic pricing rule builder with pend
 - Metrics-writer atomicity (metric in DB transaction or retry-on-failure) — deferred per user's choice: "leave it for now."
 - File-integrity guard (startup validation of JSONL) — deferred.
 - `promotion_approved` / `retrieval_success` event types — not required by PBI 1 scope.
-- Knowledge-capture promotion (`pendingStagingEnabled: true` but no candidates promoted to durable `AgenticLab/knowledge/` — metrics only).
+- Knowledge-capture promotion (`pendingStagingEnabled` — no candidates promoted to durable knowledge yet — metrics only).
 - Notification trigger / bulk threshold update / multi-language / external alert integrations — out of scope for PBI 1.
 
 ## Changes from Original Plan (amendments documented)
 
-- `recordCandidateStagedMetric.ts` removed from `packages/evershop/src/` (2026-10-20) per authorization/relay safeguard (operating-contract "Code and dependency boundaries"). Metrics emission now agent-side via `/plan`/`/implement`/`/premortem` prompts.
+- `recordCandidateStagedMetric.ts` removed from `packages/evershop/src/` (2026-10-20) per authorization/relay safeguard.
 - `AgenticLab/implementation-logs/README.md` created; folder structure established; `implement-record.json` created (snapshot at `/implement` end, read/deleted by `/implementation-log`).
 - Hardening (metrics-in-transaction, integrity guard) explicitly deferred, not hidden.
 
@@ -93,10 +90,6 @@ npm install; npm run compile; npm run build; npm start
 curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/admin/pricing-rules
 # Metrics check
 cat .pi/metrics/agenticlab.jsonl
-# Quarantine audit
-cat .pi/metrics/agenticlab.quarantine.md
-# Adapter tests
-node --test AgenticLab/adapters/pi/tests/knowledge-capture-metrics.test.mjs
 ```
 
 ## Hand-off / Next Action
