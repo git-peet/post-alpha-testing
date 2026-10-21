@@ -73,6 +73,8 @@ Carry forward candidates already present in the conversation/plan, merge duplica
 
 ### Metrics and staging checkpoint (agent side, not project code)
 
+0. **Index check** — scan `AgenticLab/knowledge/INDEX.md` trigger terms against the current task context. If one or more trigger terms match a record's trigger list, read the linked record first; emit `retrieval_success` if matched, `no_match` if attempted but nothing found. Only after reading the record should you verify its claims against current source.
+
 When the plan's task-local learning handoff contains one or more candidates (after deduplication and verification against authoritative sources), the agent uses the AgenticLab knowledge-capture adapter (`AgenticLab/adapters/pi/knowledge-capture-tools.mjs`) to stage them as pending records in `AgenticLab/knowledge/`. The agent then emits one `candidate_staged` metric via `AgenticLab/adapters/pi/knowledge-capture-metrics.mjs` to `.pi/metrics/agenticlab.jsonl` (only `event` and `occurredAt`; no business data, rule details, or customer/cart content). This observation confirms the mechanism is active. The staged candidates remain pending until promoted by an explicit user-approved action (e.g., via `/knowledge-opt-in` or equivalent). This replaces the need for any import from `packages/evershop/src/` to emit metrics.
 
 ## 5. Resolve blockers and request approval once

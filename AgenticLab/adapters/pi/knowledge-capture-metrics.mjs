@@ -4,7 +4,8 @@ import path from "node:path";
 const ALLOWED_EVENTS = new Set([
   "candidate_staged",
   "decision_knowledge",
-  "retrieval_success"
+  "retrieval_success",
+  "no_match"
 ]);
 
 export function metricPaths(workspaceRoot = ".") {
