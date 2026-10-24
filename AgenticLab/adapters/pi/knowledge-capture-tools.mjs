@@ -305,6 +305,30 @@ export function registerKnowledgeCaptureTools(pi, Type, StringEnum, { expectedRo
   });
 
   pi.registerTool({
+    name: "promoteKnowledgeCorrection",
+    label: "Review and promote a knowledge correction",
+    description: "Promote one normally staged candidate as a correction to one currently effective-active record. The target is supplied separately; supersedes is written only as optional metadata on the new active record. Requires one UI confirmation and adds exactly one record without changing the predecessor, INDEX.md, or topic maps.",
+    parameters: Type.Object({
+      id: Type.String({ minLength: 1, maxLength: 64, pattern: "^[a-z0-9](?:[a-z0-9-]{1,62}[a-z0-9])?$" }),
+      supersedes: Type.String({ minLength: 1, maxLength: 64, pattern: "^[a-z0-9](?:[a-z0-9-]{1,62}[a-z0-9])?$" }),
+    }, { additionalProperties: false }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      if (!isPlainObject(params) || !hasOnlyKeys(params, ["id", "supersedes"]) || typeof params.id !== "string" || typeof params.supersedes !== "string") {
+        throw new Error("correction promotion requires a candidate id and target supersedes id");
+      }
+      if (!ctx?.hasUI || typeof ctx.ui?.confirm !== "function") throw new Error("Knowledge correction requires an available Pi UI confirmation");
+      const result = await promoteCandidate(ctx.cwd, params.id, (preview) => ctx.ui.confirm(
+        "Promote this knowledge correction?",
+        preview,
+      ), { expectedRoot, hooks, supersedes: params.supersedes });
+      if (result.status === "rejected") return textResult("Correction was rejected. The predecessor and pending candidate remain unchanged; no active record was created.", result);
+      await recordKnowledgeCaptureMetric("decision_knowledge", { workspaceRoot: ctx.cwd }).catch(() => {});
+      const warning = result.warnings.length ? ` Warnings: ${result.warnings.join(" ")}` : " The selected pending candidate was consumed.";
+      return textResult(`Correction committed: ${result.id} is active and supersedes ${params.supersedes}.${warning}`, result);
+    },
+  });
+
+  pi.registerTool({
     name: "promoteKnowledgeBatch",
     label: "Legacy empty-store pilot promotion",
     description: "Legacy one-time ALPHA-KNOWLEDGE-PILOT-001 bootstrap only. Requires an empty active knowledge root; it cannot promote into or merge with a populated store. Use promoteKnowledgeCandidate for one-at-a-time additive promotion.",
@@ -363,10 +387,12 @@ export function registerKnowledgeCaptureTools(pi, Type, StringEnum, { expectedRo
           scope: record.scope,
           status: record.status,
           file: record.file,
+          ...(record.supersedes !== undefined ? { supersedes: record.supersedes } : {}),
+          ...(record.requestedId !== undefined ? { requestedId: record.requestedId } : {}),
         })) ?? [],
         filtered: result.filtered,
       };
-      for (const key of ["note", "issues", "totalMatches", "truncated"]) {
+      for (const key of ["note", "issues", "totalMatches", "truncated", "resolution"]) {
         if (result[key] !== undefined) summary[key] = result[key];
       }
       return textResult(JSON.stringify(summary, null, 2), summary);

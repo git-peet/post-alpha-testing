@@ -1,0 +1,44 @@
+{
+  "pbi": {
+    "id": "knowledge-correction-supersession",
+    "title": "Append-only knowledge correction and supersession",
+    "scope": "project:post-integration-delivery"
+  },
+  "status": "implemented",
+  "startedAt": "2026-10-24",
+  "completedAt": "2026-10-24",
+  "goal": "Add reviewed append-only correction for active knowledge and resolve superseded IDs to the latest replacement without returning predecessor bodies.",
+  "inScope": [
+    "Delivery-workspace knowledge capture and retrieval behavior",
+    "Fixture-based adapter validation"
+  ],
+  "outOfScope": [
+    "Predecessor record, INDEX/MOC, live candidate, or active-store modifications",
+    "EverShop application source, database, canonical source, or payload workspace",
+    "PBI-4 implementation record"
+  ],
+  "filesChanged": [],
+  "apiEndpoints": [],
+  "migrations": [],
+  "validation": {
+    "commands": [],
+    "results": [
+      "Complete adapter suite: 35 tests passed, 0 failed",
+      "Syntax checks passed for all three changed .mjs files",
+      "git diff --check passed"
+    ]
+  },
+  "risks": [
+    "Invalid or ambiguous supersession metadata fails closed for retrieval across the workspace-scoped active collection.",
+    "Decision metric persistence remains best-effort under the existing metrics writer."
+  ],
+  "deviations": [
+    "No PBI-4 implementation record was changed; adapter paths are omitted from this project-level snapshot per its content rules."
+  ],
+  "unresolved": [
+    "A malformed relationship anywhere in the workspace-scoped active graph can make otherwise unrelated retrievals incomplete."
+  ],
+  "learningCandidates": [
+    "Supersession is an effective retrieval state derived from replacement metadata; predecessor files remain unchanged and their bodies must not participate in active search."
+  ]
+}

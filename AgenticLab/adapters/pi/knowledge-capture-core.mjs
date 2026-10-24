@@ -556,6 +556,7 @@ export function renderActiveRecord(record) {
     `evidence: ${JSON.stringify(record.evidence)}`,
     `recorded: ${JSON.stringify(record.recorded)}`,
     `verified: ${JSON.stringify(record.verified)}`,
+    ...(record.supersedes ? [`supersedes: ${JSON.stringify(record.supersedes)}`] : []),
     "---",
     "",
     `# ${record.title}`,
@@ -736,6 +737,29 @@ export function renderCandidatePromotionPreview(record, { alreadyActive = false 
   return preview;
 }
 
+export function renderCorrectionPromotionPreview(predecessor, predecessorContent, replacement) {
+  const parts = [
+    `Promote ${replacement.id} as a correction that supersedes ${predecessor.id}.`,
+    `Relationship: ${replacement.id} supersedes ${predecessor.id}.`,
+    `Replacement scope: ${replacement.scope}`,
+    "The predecessor file will remain unchanged. Existing INDEX.md and topic maps will not be changed.",
+    "One new active record will be published after this confirmation; only this pending candidate will then be consumed.",
+    "",
+    `## Complete predecessor record (${predecessor.id}.md)`,
+    "```markdown",
+    predecessorContent.trimEnd(),
+    "```",
+    "",
+    `## Complete replacement record (${replacement.id}.md)`,
+    "```markdown",
+    renderActiveRecord(replacement).trimEnd(),
+    "```",
+  ];
+  const preview = parts.join("\n");
+  if (Buffer.byteLength(preview, "utf8") > MAX_PREVIEW_BYTES) fail(`complete correction preview exceeds ${MAX_PREVIEW_BYTES} bytes`);
+  return preview;
+}
+
 export async function listPendingCandidates(cwd, { expectedRoot = PILOT_WORKSPACE_ROOT } = {}) {
   const locations = await resolvePilotLocations(cwd, expectedRoot);
   return withCaptureLock(locations, async () => {
@@ -749,8 +773,9 @@ export async function listPendingCandidates(cwd, { expectedRoot = PILOT_WORKSPAC
   });
 }
 
-export async function promoteCandidate(cwd, id, confirm, { expectedRoot = PILOT_WORKSPACE_ROOT, hooks = {} } = {}) {
+export async function promoteCandidate(cwd, id, confirm, { expectedRoot = PILOT_WORKSPACE_ROOT, hooks = {}, supersedes } = {}) {
   if (typeof id !== "string" || !/^[a-z0-9](?:[a-z0-9-]{1,62}[a-z0-9])?$/u.test(id)) fail("promotion requires a valid candidate ID");
+  if (supersedes !== undefined && (typeof supersedes !== "string" || !/^[a-z0-9](?:[a-z0-9-]{1,62}[a-z0-9])?$/u.test(supersedes))) fail("correction requires a valid target record ID");
   if (typeof confirm !== "function") fail("candidate promotion requires an available UI confirmation function");
   const locations = await resolvePilotLocations(cwd, expectedRoot);
   return withCaptureLock(locations, async () => {
@@ -763,18 +788,34 @@ export async function promoteCandidate(cwd, id, confirm, { expectedRoot = PILOT_
     const located = await locatePendingCandidate(locations, id, policy.scope);
     if (!located) fail(`no pending candidate with ID "${id}" exists`);
     const { candidate, batchId } = located;
-    const recordContent = renderActiveRecord(candidate);
-    if (Buffer.byteLength(recordContent, "utf8") > MAX_RECORD_BYTES) fail(`promoted record exceeds ${MAX_RECORD_BYTES} bytes`);
-
     const activeIds = await readActiveRecordIds(locations);
     let alreadyActive = activeIds.has(id);
-    if (alreadyActive) {
+    let replacement = candidate;
+    let predecessor;
+    let predecessorContent;
+    if (supersedes !== undefined) {
+      if (supersedes === id) fail("a replacement candidate cannot supersede itself");
+      if (alreadyActive) fail(`active record ID collision: ${id}`);
+      const activeRecords = await readWorkspaceActiveRecords(locations, policy.scope);
+      const graph = buildSupersessionGraph(activeRecords);
+      predecessor = graph.byId.get(supersedes);
+      if (!predecessor) fail(`supersession target is missing, inactive, or out of scope: ${supersedes}`);
+      if (graph.supersededIds.has(supersedes)) fail(`supersession target is already superseded: ${supersedes}`);
+      predecessorContent = await readBoundedRegularFile(predecessor.filePath, MAX_RECORD_BYTES);
+      replacement = { ...candidate, scope: predecessor.scope, supersedes };
+      alreadyActive = false;
+    } else if (alreadyActive) {
       const activeContent = await readBoundedRegularFile(path.join(locations.activeRoot, `${id}.md`), MAX_RECORD_BYTES);
-      if (activeContent !== recordContent) fail(`active record ID collision: ${id}`);
+      if (activeContent !== renderActiveRecord(candidate)) fail(`active record ID collision: ${id}`);
     }
+    const recordContent = renderActiveRecord(replacement);
+    if (Buffer.byteLength(recordContent, "utf8") > MAX_RECORD_BYTES) fail(`promoted record exceeds ${MAX_RECORD_BYTES} bytes`);
 
     const snapshot = pendingSnapshot([candidate]);
-    const approved = await confirm(renderCandidatePromotionPreview(candidate, { alreadyActive }));
+    const preview = supersedes !== undefined
+      ? renderCorrectionPromotionPreview(predecessor, predecessorContent, replacement)
+      : renderCandidatePromotionPreview(candidate, { alreadyActive });
+    const approved = await confirm(preview);
     if (approved !== true) return { promoted: false, status: "rejected", count: 1, pendingConsumed: false, warnings: [] };
 
     const currentPolicy = await loadPolicy(locations);
@@ -785,8 +826,23 @@ export async function promoteCandidate(cwd, id, confirm, { expectedRoot = PILOT_
     }
 
     const currentActiveIds = await readActiveRecordIds(locations);
-    const currentAlreadyActive = currentActiveIds.has(id);
-    if (currentAlreadyActive !== alreadyActive) fail("active record state changed during promotion review; retry with a fresh preview");
+    let currentAlreadyActive = currentActiveIds.has(id);
+    if (supersedes !== undefined) {
+      if (currentAlreadyActive) fail(`active record ID collision: ${id}`);
+      const currentRecords = await readWorkspaceActiveRecords(locations, currentPolicy.scope);
+      const currentGraph = buildSupersessionGraph(currentRecords);
+      const currentPredecessor = currentGraph.byId.get(supersedes);
+      if (!currentPredecessor) fail(`supersession target is missing, inactive, or out of scope: ${supersedes}`);
+      if (currentGraph.supersededIds.has(supersedes)) fail(`supersession target is already superseded: ${supersedes}`);
+      const currentPredecessorContent = await readBoundedRegularFile(currentPredecessor.filePath, MAX_RECORD_BYTES);
+      if (currentPredecessorContent !== predecessorContent || currentPredecessor.scope !== predecessor.scope) {
+        fail("supersession target changed during correction review; retry with a fresh preview");
+      }
+      replacement = { ...candidate, scope: currentPredecessor.scope, supersedes };
+      if (renderActiveRecord(replacement) !== recordContent) fail("correction replacement changed during review; no active record was written");
+      currentAlreadyActive = false;
+    }
+    if (supersedes === undefined && currentAlreadyActive !== alreadyActive) fail("active record state changed during promotion review; retry with a fresh preview");
     if (currentAlreadyActive) {
       const activeContent = await readBoundedRegularFile(path.join(locations.activeRoot, `${id}.md`), MAX_RECORD_BYTES);
       if (activeContent !== recordContent) fail(`active record ID collision: ${id}`);
@@ -974,12 +1030,15 @@ function normalizeRecordMetadata(meta, file, workspaceScope) {
     return { kind: "incomplete", reason: "record dates are invalid" };
   }
   if (!VALID_RECORD_STATUSES.has(meta.status)) return { kind: "incomplete", reason: "record lifecycle status is unknown" };
+  if (meta.supersedes !== undefined && (typeof meta.supersedes !== "string" || !/^[a-z0-9](?:[a-z0-9-]{1,62}[a-z0-9])?$/u.test(meta.supersedes))) {
+    return { kind: "incomplete", reason: "record supersedes metadata is invalid" };
+  }
   if (!CATEGORIES.has(meta.category)) return { kind: "filtered", reason: "record category is not in the current knowledge contract", record: { id: meta.id, title: meta.title, category: meta.category, scope: meta.scope, status: meta.status, file } };
   if (!scopeBelongsToWorkspace(meta.scope, workspaceScope)) {
     return { kind: "filtered", reason: "record belongs to a different project scope", record: { id: meta.id, title: meta.title, category: meta.category, scope: meta.scope, status: meta.status, file } };
   }
   if (meta.status !== "active") return { kind: "filtered", reason: `record status is ${meta.status}`, record: { id: meta.id, title: meta.title, category: meta.category, scope: meta.scope, status: meta.status, file } };
-  return { kind: "record", record: { id: meta.id, title: meta.title, category: meta.category, scope: meta.scope, status: meta.status, recorded: meta.recorded, verified: meta.verified, file } };
+  return { kind: "record", record: { id: meta.id, title: meta.title, category: meta.category, scope: meta.scope, status: meta.status, recorded: meta.recorded, verified: meta.verified, ...(meta.supersedes !== undefined ? { supersedes: meta.supersedes } : {}), file } };
 }
 
 function scopeBelongsToWorkspace(recordScope, workspaceScope) {
@@ -989,6 +1048,65 @@ function scopeBelongsToWorkspace(recordScope, workspaceScope) {
 function scopeMatches(recordScope, requestedScope, workspaceScope) {
   if (!requestedScope || requestedScope === workspaceScope || recordScope === workspaceScope) return true;
   return recordScope === requestedScope || recordScope.startsWith(`${requestedScope}/`) || requestedScope.startsWith(`${recordScope}/`);
+}
+
+async function readWorkspaceActiveRecords(locations, workspaceScope) {
+  const inventory = await collectActiveRecordPaths(locations.activeRoot);
+  if (inventory.issues.length) fail(`active record inventory is incomplete: ${inventory.issues[0].reason}`);
+  const records = [];
+  const ids = new Set();
+  for (const filePath of inventory.files) {
+    const relativePath = path.relative(locations.activeRoot, filePath).split(path.sep).join("/");
+    const header = await readRecordMetadataHeader(filePath);
+    if (header.kind === "map") continue;
+    if (header.kind !== "record") fail(`active record metadata is incomplete: ${relativePath}`);
+    const normalized = normalizeRecordMetadata(header.meta, relativePath, workspaceScope);
+    if (normalized.kind === "incomplete") fail(`active record metadata is incomplete: ${relativePath}: ${normalized.reason}`);
+    if (normalized.kind !== "record") continue;
+    if (ids.has(normalized.record.id)) fail(`active knowledge contains a duplicate record ID: ${normalized.record.id}`);
+    ids.add(normalized.record.id);
+    records.push({ ...normalized.record, filePath });
+  }
+  return records;
+}
+
+function buildSupersessionGraph(records) {
+  const byId = new Map();
+  const replacementById = new Map();
+  for (const record of records) {
+    if (byId.has(record.id)) fail(`active knowledge contains a duplicate record ID: ${record.id}`);
+    byId.set(record.id, record);
+  }
+  for (const record of records) {
+    if (record.supersedes === undefined) continue;
+    if (typeof record.supersedes !== "string" || !/^[a-z0-9](?:[a-z0-9-]{1,62}[a-z0-9])?$/u.test(record.supersedes)) {
+      fail(`record ${record.id} has invalid supersedes metadata`);
+    }
+    if (record.supersedes === record.id) fail(`record ${record.id} cannot supersede itself`);
+    const predecessor = byId.get(record.supersedes);
+    if (!predecessor) fail(`record ${record.id} supersedes a missing or ineligible record ${record.supersedes}`);
+    if (predecessor.scope !== record.scope) fail(`record ${record.id} supersedes a record in a different scope`);
+    if (replacementById.has(predecessor.id)) fail(`multiple records supersede ${predecessor.id}`);
+    replacementById.set(predecessor.id, record.id);
+  }
+  for (const id of byId.keys()) {
+    const visited = new Set();
+    let current = id;
+    while (replacementById.has(current)) {
+      if (visited.has(current)) fail(`supersession cycle detected at ${current}`);
+      visited.add(current);
+      current = replacementById.get(current);
+    }
+  }
+  return {
+    byId,
+    supersededIds: new Set(replacementById.keys()),
+    latest(id) {
+      let current = id;
+      while (replacementById.has(current)) current = replacementById.get(current);
+      return byId.get(current);
+    },
+  };
 }
 
 export async function readKnowledge(cwd, { id, query, scope, category, limit = MAX_RETRIEVAL_RESULTS } = {}, { expectedRoot = PILOT_WORKSPACE_ROOT } = {}) {
@@ -1017,6 +1135,23 @@ export async function readKnowledge(cwd, { id, query, scope, category, limit = M
     policy = await loadPolicy(locations);
   } catch (error) {
     return { status: "unavailable", matches: [], count: 0, complete: false, note: `workspace scope policy could not be read: ${error.message}` };
+  }
+
+  let graph;
+  try {
+    graph = buildSupersessionGraph(await readWorkspaceActiveRecords(locations, policy.scope));
+  } catch (error) {
+    return {
+      status: "incomplete",
+      matches: [],
+      count: 0,
+      complete: false,
+      searched: 0,
+      filteredCount: 0,
+      filtered: [],
+      issues: [{ file: "AgenticLab/knowledge", reason: error.message }],
+      note: "the active supersession graph is invalid or incomplete; no record bodies were returned",
+    };
   }
 
   const inventory = await collectActiveRecordPaths(locations.activeRoot);
@@ -1067,6 +1202,7 @@ export async function readKnowledge(cwd, { id, query, scope, category, limit = M
     eligible.push({ ...record, filePath });
   }
 
+  const effectiveEligible = eligible.filter((record) => !graph.supersededIds.has(record.id));
   const complete = issues.length === 0;
   const filteredSummary = filtered.slice(0, MAX_RETRIEVAL_RESULTS).map(({ id, title, category: recordCategory, scope: recordScope, status, file, reason }) => ({
     id, title, category: recordCategory, scope: recordScope, status, file, reason,
@@ -1081,12 +1217,26 @@ export async function readKnowledge(cwd, { id, query, scope, category, limit = M
 
   if (typeof id === "string" && id.trim()) {
     const wanted = id.trim().replace(/\.md$/u, "");
-    const match = eligible.find((record) => record.id === wanted);
+    const requested = graph.byId.get(wanted);
+    const latest = requested ? graph.latest(wanted) : undefined;
+    const resolvedId = latest?.id ?? wanted;
+    const match = eligible.find((record) => record.id === resolvedId);
+    const resolution = latest && latest.id !== wanted
+      ? {
+        requestedId: wanted,
+        effectiveStatus: "superseded",
+        replacementId: latest.id,
+        replacementTitle: latest.title,
+        replacementScope: latest.scope,
+        replacementStatus: latest.status,
+        replacementSupersedes: latest.supersedes ?? null,
+      }
+      : undefined;
     if (!match) {
-      const excluded = filtered.find((record) => record.id === wanted);
+      const excluded = filtered.find((record) => record.id === wanted || record.id === resolvedId);
       if (issues.length) return { ...base, status: "incomplete", matches: [], count: 0, note: "the eligible record inventory was incomplete" };
       if (excluded) {
-        const excludedSummary = filteredSummary.find((record) => record.id === wanted);
+        const excludedSummary = filteredSummary.find((record) => record.id === excluded.id);
         return { ...base, status: "filtered", filteredCount: 1, filtered: excludedSummary ? [excludedSummary] : [], matches: [], count: 0, note: excluded.reason };
       }
       return { ...base, status: "not_found", matches: [], count: 0, note: `no active in-scope record with id "${wanted}"` };
@@ -1094,9 +1244,9 @@ export async function readKnowledge(cwd, { id, query, scope, category, limit = M
     try {
       const content = await readBoundedRegularFile(match.filePath, MAX_RECORD_BYTES);
       const { body } = parseFrontMatter(content);
-      const selected = { ...match, content, body };
+      const selected = { ...match, ...(resolution ? { requestedId: wanted } : {}), content, body };
       delete selected.filePath;
-      return { ...base, status: complete ? "ok" : "incomplete", matches: [selected], count: 1, searched: 1, ...(issues.length ? { note: "the matching record was read, but the full inventory was incomplete" } : {}) };
+      return { ...base, status: complete ? "ok" : "incomplete", matches: [selected], count: 1, searched: 1, ...(resolution ? { resolution } : {}), ...(issues.length ? { note: "the matching record was read, but the full inventory was incomplete" } : {}) };
     } catch (error) {
       return { ...base, status: "incomplete", matches: [], count: 0, issues: [...(base.issues || []), { file: match.file, reason: `record body could not be read: ${error.message}` }], note: "the matching record body could not be read" };
     }
@@ -1106,7 +1256,7 @@ export async function readKnowledge(cwd, { id, query, scope, category, limit = M
   const scored = [];
   let bytesRead = 0;
   let searched = 0;
-  for (const record of eligible) {
+  for (const record of effectiveEligible) {
     let content;
     try {
       content = await readBoundedRegularFile(record.filePath, MAX_RECORD_BYTES);

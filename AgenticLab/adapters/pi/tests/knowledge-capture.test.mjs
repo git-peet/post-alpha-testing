@@ -63,8 +63,9 @@ function candidate(overrides = {}) {
   };
 }
 
-function activeRecordFile({ id, title = id, category = "fact", scope = "project:post-integration-delivery", status = "active", recorded = "2026-10-22", verified = "2026-10-22", body = "" }) {
+function activeRecordFile({ id, title = id, category = "fact", scope = "project:post-integration-delivery", status = "active", recorded = "2026-10-22", verified = "2026-10-22", supersedes, body = "" }) {
   const metadata = { id, title, category, scope, status, recorded, verified };
+  if (supersedes !== undefined) metadata.supersedes = supersedes;
   return `---\n${Object.entries(metadata).map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join("\n")}\n---\n\n# ${title}\n\n${body}\n`;
 }
 
@@ -92,6 +93,20 @@ async function listPendingBytes(pendingRoot) {
     if (error?.code === "ENOENT") return [];
     throw error;
   }
+}
+
+async function waitForMetricEvents(workspaceRoot, expectedCount) {
+  const metricPath = path.join(workspaceRoot, ".pi", "metrics", "agenticlab.jsonl");
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    try {
+      const events = (await fs.readFile(metricPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line).event);
+      if (events.length >= expectedCount) return events;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  return [];
 }
 
 function fakePi() {
@@ -871,4 +886,232 @@ test("tool parameter schemas are closed and legacy pilot promotion confirms via 
   assert.equal(ui.confirmations.length, 1);
   assert.match(ui.confirmations[0].message, /Review candidates before activation/u);
   assert.equal(result.details.promoted, true);
+});
+
+test("legacy candidates remain valid and correction retrieval resolves chains without predecessor bodies", async (t) => {
+  const fx = await fixture(t, { scope: "project:post-integration-delivery", pendingStagingEnabled: true });
+  const activeRoot = path.join(fx.agenticDir, "knowledge");
+  const mapDir = path.join(activeRoot, "topic-map");
+  await fs.mkdir(mapDir, { recursive: true });
+  const index = "# Existing router\n";
+  const map = "# Existing topic map\n";
+  await fs.writeFile(path.join(activeRoot, "INDEX.md"), index);
+  await fs.writeFile(path.join(mapDir, "INDEX.md"), map);
+  const predecessor = { id: "legacy-predecessor", title: "Legacy predecessor", scope: "inventory/topic", body: "distinctive stale predecessor phrase" };
+  const predecessorPath = await writeActiveRecord(fx, predecessor);
+  const predecessorBytes = await fs.readFile(predecessorPath);
+
+  const first = candidate({ id: "replacement-first", scope: fx.scope, title: "First correction", claim: "First replacement claim." });
+  assert.equal(validateCandidate(first, fx.scope).status, "candidate", "the legacy candidate shape requires no supersedes key");
+  await stageCandidates(fx.workspaceRoot, [first], { expectedRoot: fx.expectedRoot });
+  const pi = await registerCapture(fx);
+  const correctionTool = pi.tools.get("promoteKnowledgeCorrection");
+  assert.ok(correctionTool);
+  assert.equal(correctionTool.parameters.options.additionalProperties, false);
+  assert.deepEqual(Object.keys(correctionTool.parameters.properties), ["id", "supersedes"]);
+  const firstUi = uiContext(fx.workspaceRoot, [true]);
+  const firstResult = await correctionTool.execute("correction-first", { id: first.id, supersedes: predecessor.id }, undefined, undefined, firstUi.ctx);
+  assert.equal(firstUi.confirmations.length, 1);
+  assert.match(firstUi.confirmations[0].message, /replacement-first supersedes legacy-predecessor/u);
+  assert.match(firstUi.confirmations[0].message, /distinctive stale predecessor phrase/u);
+  assert.match(firstUi.confirmations[0].message, /First replacement claim/u);
+  assert.equal(firstResult.details.status, "active");
+  assert.equal(firstResult.details.pendingConsumed, true);
+  const firstFile = await fs.readFile(path.join(activeRoot, `${first.id}.md`), "utf8");
+  assert.match(firstFile, /^supersedes: "legacy-predecessor"$/mu);
+  assert.match(firstFile, /^scope: "inventory\/topic"$/mu, "replacement retains the predecessor's narrower scope");
+  assert.equal(await fs.readFile(predecessorPath).then((value) => value.equals(predecessorBytes)), true);
+  assert.equal(await fs.readFile(path.join(activeRoot, "INDEX.md"), "utf8"), index);
+  assert.equal(await fs.readFile(path.join(mapDir, "INDEX.md"), "utf8"), map);
+
+  const second = candidate({ id: "replacement-latest", scope: fx.scope, title: "Latest correction", claim: "latest replacement searchable marker" });
+  await stageCandidates(fx.workspaceRoot, [second], { expectedRoot: fx.expectedRoot });
+  const secondUi = uiContext(fx.workspaceRoot, [true]);
+  await correctionTool.execute("correction-second", { id: second.id, supersedes: first.id }, undefined, undefined, secondUi.ctx);
+  assert.equal(secondUi.confirmations.length, 1);
+
+  const oldLookup = await readKnowledge(fx.workspaceRoot, { id: predecessor.id }, { expectedRoot: fx.expectedRoot });
+  assert.equal(oldLookup.status, "ok");
+  assert.equal(oldLookup.matches[0].id, second.id);
+  assert.equal(oldLookup.matches[0].requestedId, predecessor.id);
+  assert.equal(oldLookup.resolution.effectiveStatus, "superseded");
+  assert.equal(oldLookup.resolution.replacementId, second.id);
+  assert.equal(oldLookup.matches[0].content.includes("distinctive stale predecessor phrase"), false);
+  const intermediateLookup = await readKnowledge(fx.workspaceRoot, { id: first.id }, { expectedRoot: fx.expectedRoot });
+  assert.equal(intermediateLookup.matches[0].id, second.id);
+  assert.equal(intermediateLookup.resolution.replacementId, second.id);
+
+  const staleSearch = await readKnowledge(fx.workspaceRoot, { query: "distinctive stale predecessor phrase" }, { expectedRoot: fx.expectedRoot });
+  assert.equal(staleSearch.status, "no_match");
+  assert.equal(staleSearch.complete, true);
+  const currentSearch = await readKnowledge(fx.workspaceRoot, { query: "latest replacement searchable marker" }, { expectedRoot: fx.expectedRoot });
+  assert.equal(currentSearch.status, "ok");
+  assert.deepEqual(currentSearch.matches.map(({ id }) => id), [second.id]);
+
+  const readTool = pi.tools.get("readKnowledgeRecords");
+  const toolLookup = await readTool.execute("correction-old-lookup", { id: predecessor.id }, undefined, undefined, { cwd: fx.workspaceRoot });
+  assert.equal(toolLookup.details.resolution.replacementId, second.id);
+  assert.equal(toolLookup.details.matches[0].id, second.id);
+  assert.equal(toolLookup.details.matches[0].supersedes, first.id);
+  const toolSearch = await readTool.execute("correction-replacement-search", {
+    query: "latest replacement searchable marker",
+  }, undefined, undefined, { cwd: fx.workspaceRoot });
+  assert.equal(toolSearch.details.status, "ok");
+  assert.deepEqual(toolSearch.details.matches.map(({ id }) => id), [second.id]);
+  const metrics = await waitForMetricEvents(fx.workspaceRoot, 4);
+  assert.deepEqual(metrics, ["decision_knowledge", "decision_knowledge", "retrieval_success", "retrieval_success"]);
+  assert.equal(await fs.readFile(path.join(activeRoot, "INDEX.md"), "utf8"), index);
+  assert.equal(await fs.readFile(path.join(mapDir, "INDEX.md"), "utf8"), map);
+});
+
+test("correction rejects missing, out-of-scope, already-superseded, and colliding targets without mutation", async (t) => {
+  const cases = [
+    { name: "missing", target: "missing-target", setup: async () => {}, pattern: /missing, inactive, or out of scope/u },
+    { name: "self-target", target: "candidate-self-target", setup: async () => {}, pattern: /cannot supersede itself/u },
+    { name: "wrong-scope", target: "foreign-target", setup: async (fx) => writeActiveRecord(fx, { id: "foreign-target", scope: "project:other-project" }), pattern: /missing, inactive, or out of scope/u },
+    { name: "already-superseded", target: "old-target", setup: async (fx) => {
+      await writeActiveRecord(fx, { id: "old-target" });
+      await writeActiveRecord(fx, { id: "current-target", supersedes: "old-target" });
+    }, pattern: /already superseded/u },
+  ];
+  for (const scenario of cases) {
+    const fx = await fixture(t, { scope: "project:post-integration-delivery", pendingStagingEnabled: true });
+    await fs.mkdir(path.join(fx.agenticDir, "knowledge"), { recursive: true });
+    await scenario.setup(fx);
+    const replacement = candidate({ id: `candidate-${scenario.name}`, scope: fx.scope });
+    await stageCandidates(fx.workspaceRoot, [replacement], { expectedRoot: fx.expectedRoot });
+    const pendingRoot = path.join(fx.agenticDir, "knowledge-pending");
+    const pendingBefore = await listPendingBytes(pendingRoot);
+    const pi = await registerCapture(fx);
+    const ui = uiContext(fx.workspaceRoot, [true]);
+    await assert.rejects(pi.tools.get("promoteKnowledgeCorrection").execute(`reject-${scenario.name}`, {
+      id: replacement.id,
+      supersedes: scenario.target,
+    }, undefined, undefined, ui.ctx), scenario.pattern, scenario.name);
+    assert.equal(ui.confirmations.length, 0, `${scenario.name} must fail before confirmation`);
+    assert.deepEqual(await listPendingBytes(pendingRoot), pendingBefore, `${scenario.name} preserves pending bytes`);
+    assert.equal(await fs.stat(path.join(fx.agenticDir, "knowledge", `${replacement.id}.md`)).then(() => true, () => false), false);
+    await assert.rejects(fs.lstat(path.join(fx.workspaceRoot, ".pi", "metrics", "agenticlab.jsonl")), { code: "ENOENT" });
+  }
+
+  const fx = await fixture(t, { scope: "project:post-integration-delivery", pendingStagingEnabled: true });
+  await fs.mkdir(path.join(fx.agenticDir, "knowledge"), { recursive: true });
+  await writeActiveRecord(fx, { id: "collision-target" });
+  const replacement = candidate({ id: "late-id-collision", scope: fx.scope });
+  await stageCandidates(fx.workspaceRoot, [replacement], { expectedRoot: fx.expectedRoot });
+  await writeActiveRecord(fx, { id: replacement.id });
+  const pendingRoot = path.join(fx.agenticDir, "knowledge-pending");
+  const pendingBefore = await listPendingBytes(pendingRoot);
+  const pi = await registerCapture(fx);
+  const ui = uiContext(fx.workspaceRoot, [true]);
+  await assert.rejects(pi.tools.get("promoteKnowledgeCorrection").execute("correction-collision", {
+    id: replacement.id,
+    supersedes: "collision-target",
+  }, undefined, undefined, ui.ctx), /active record ID collision/u);
+  assert.equal(ui.confirmations.length, 0);
+  assert.deepEqual(await listPendingBytes(pendingRoot), pendingBefore);
+  await assert.rejects(fs.lstat(path.join(fx.workspaceRoot, ".pi", "metrics", "agenticlab.jsonl")), { code: "ENOENT" });
+});
+
+test("correction UI rejection and injected publish failure preserve active and pending bytes without metrics", async (t) => {
+  for (const mode of ["rejection", "publish-failure"]) {
+    const fx = await fixture(t, { scope: "project:post-integration-delivery", pendingStagingEnabled: true });
+    const activeRoot = path.join(fx.agenticDir, "knowledge");
+    const mapDir = path.join(activeRoot, "topic-map");
+    await fs.mkdir(mapDir, { recursive: true });
+    const index = "# Protected index\n";
+    const map = "# Protected map\n";
+    await fs.writeFile(path.join(activeRoot, "INDEX.md"), index);
+    await fs.writeFile(path.join(mapDir, "INDEX.md"), map);
+    const predecessorPath = await writeActiveRecord(fx, { id: `predecessor-${mode}`, body: "predecessor bytes stay unchanged" });
+    const predecessorBytes = await fs.readFile(predecessorPath);
+    const replacement = candidate({ id: `replacement-${mode}`, scope: fx.scope });
+    await stageCandidates(fx.workspaceRoot, [replacement], { expectedRoot: fx.expectedRoot });
+    const pendingRoot = path.join(fx.agenticDir, "knowledge-pending");
+    const pendingBefore = await listPendingBytes(pendingRoot);
+    const hooks = mode === "publish-failure" ? { beforePublish: async () => { throw new Error("injected correction publish failure"); } } : {};
+    const pi = await registerCapture(fx, { hooks });
+    const ui = uiContext(fx.workspaceRoot, [mode !== "rejection"]);
+    const invoke = pi.tools.get("promoteKnowledgeCorrection").execute(`correction-${mode}`, {
+      id: replacement.id,
+      supersedes: `predecessor-${mode}`,
+    }, undefined, undefined, ui.ctx);
+    if (mode === "rejection") {
+      const result = await invoke;
+      assert.equal(result.details.status, "rejected");
+    } else {
+      await assert.rejects(invoke, /injected correction publish failure/u);
+    }
+    assert.equal(ui.confirmations.length, 1);
+    assert.match(ui.confirmations[0].message, /predecessor bytes stay unchanged/u);
+    assert.equal(await fs.readFile(predecessorPath).then((value) => value.equals(predecessorBytes)), true);
+    assert.equal(await fs.readFile(path.join(activeRoot, "INDEX.md"), "utf8"), index);
+    assert.equal(await fs.readFile(path.join(mapDir, "INDEX.md"), "utf8"), map);
+    assert.deepEqual(await listPendingBytes(pendingRoot), pendingBefore);
+    await assert.rejects(fs.lstat(path.join(activeRoot, `${replacement.id}.md`)), { code: "ENOENT" });
+    await assert.rejects(fs.lstat(path.join(fx.workspaceRoot, ".pi", "metrics", "agenticlab.jsonl")), { code: "ENOENT" });
+  }
+});
+
+test("post-publish correction cleanup warning retains committed-success semantics", async (t) => {
+  const fx = await fixture(t, { scope: "project:post-integration-delivery", pendingStagingEnabled: true });
+  const activeRoot = path.join(fx.agenticDir, "knowledge");
+  await fs.mkdir(activeRoot, { recursive: true });
+  const predecessorPath = await writeActiveRecord(fx, { id: "cleanup-predecessor" });
+  const predecessorBytes = await fs.readFile(predecessorPath);
+  const replacement = candidate({ id: "cleanup-replacement", scope: fx.scope });
+  await stageCandidates(fx.workspaceRoot, [replacement], { expectedRoot: fx.expectedRoot });
+  const pendingRoot = path.join(fx.agenticDir, "knowledge-pending");
+  const pendingBefore = await listPendingBytes(pendingRoot);
+  const pi = await registerCapture(fx, { hooks: { beforePendingConsume: async () => { throw new Error("injected cleanup warning"); } } });
+  const ui = uiContext(fx.workspaceRoot, [true]);
+  const result = await pi.tools.get("promoteKnowledgeCorrection").execute("correction-cleanup-warning", {
+    id: replacement.id,
+    supersedes: "cleanup-predecessor",
+  }, undefined, undefined, ui.ctx);
+  assert.equal(result.details.status, "active");
+  assert.equal(result.details.pendingConsumed, false);
+  assert.match(result.details.warnings.join(" "), /injected cleanup warning/u);
+  assert.equal(await fs.readFile(predecessorPath).then((value) => value.equals(predecessorBytes)), true);
+  assert.ok((await fs.stat(path.join(activeRoot, `${replacement.id}.md`))).isFile());
+  assert.deepEqual(await listPendingBytes(pendingRoot), pendingBefore);
+  const events = (await fs.readFile(path.join(fx.workspaceRoot, ".pi", "metrics", "agenticlab.jsonl"), "utf8"))
+    .trim().split("\n").map((line) => JSON.parse(line).event);
+  assert.deepEqual(events, ["decision_knowledge"]);
+});
+
+test("correction rejects branching and cyclic graphs and retrieval fails closed", async (t) => {
+  const cases = [
+    { name: "branch", records: [
+      { id: "branch-root" },
+      { id: "branch-left", supersedes: "branch-root" },
+      { id: "branch-right", supersedes: "branch-root" },
+    ], pattern: /multiple records supersede/u },
+    { name: "cycle", records: [
+      { id: "cycle-left", supersedes: "cycle-right" },
+      { id: "cycle-right", supersedes: "cycle-left" },
+    ], pattern: /cycle detected/u },
+  ];
+  for (const scenario of cases) {
+    const fx = await fixture(t, { scope: "project:post-integration-delivery", pendingStagingEnabled: true });
+    await fs.mkdir(path.join(fx.agenticDir, "knowledge"), { recursive: true });
+    for (const record of scenario.records) await writeActiveRecord(fx, record);
+    const read = await readKnowledge(fx.workspaceRoot, { query: "anything" }, { expectedRoot: fx.expectedRoot });
+    assert.equal(read.status, "incomplete", `${scenario.name} graph must fail closed`);
+    assert.equal(read.matches.length, 0);
+    assert.equal(JSON.stringify(read).includes("# " + scenario.records[0].id), false);
+
+    const replacement = candidate({ id: `candidate-${scenario.name}`, scope: fx.scope });
+    await stageCandidates(fx.workspaceRoot, [replacement], { expectedRoot: fx.expectedRoot });
+    const pendingRoot = path.join(fx.agenticDir, "knowledge-pending");
+    const pendingBefore = await listPendingBytes(pendingRoot);
+    const pi = await registerCapture(fx);
+    const ui = uiContext(fx.workspaceRoot, [true]);
+    await assert.rejects(pi.tools.get("promoteKnowledgeCorrection").execute(`graph-${scenario.name}`, {
+      id: replacement.id,
+      supersedes: scenario.records[0].id,
+    }, undefined, undefined, ui.ctx), scenario.pattern);
+    assert.equal(ui.confirmations.length, 0);
+    assert.deepEqual(await listPendingBytes(pendingRoot), pendingBefore);
+  }
 });
