@@ -1,7 +1,7 @@
 ---
 id: pbi-2-advisory-lock-concurrency
 title: Advisory lock serializes concurrent inventory reservations
-category: concurrency-control
+category: fact
 scope: multi-warehouse-inventory
 status: active
 source:
