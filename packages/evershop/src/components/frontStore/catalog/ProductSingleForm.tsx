@@ -10,6 +10,7 @@ import {
 } from '@components/frontStore/cart/AddToCart.js';
 import { useProduct } from '@components/frontStore/catalog/ProductContext.js';
 import { ProductSingleAttributes } from '@components/frontStore/catalog/ProductSingleAttributes.js';
+import { SaveToWishlist } from '@components/frontStore/customer/SaveToWishlist.js';
 import { VariantSelector } from '@components/frontStore/catalog/VariantSelector.js';
 import { _ } from '@evershop/evershop/lib/locale/translate/_';
 import React from 'react';
@@ -68,6 +69,13 @@ export function ProductSingleForm() {
             },
             sortOrder: 10,
             id: 'variantSelector'
+          },
+          {
+            component: {
+              default: <SaveToWishlist />
+            },
+            sortOrder: 40,
+            id: 'saveToWishlist'
           },
           {
             component: {

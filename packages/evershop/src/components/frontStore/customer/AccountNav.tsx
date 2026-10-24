@@ -7,7 +7,11 @@ import React from 'react';
  * scroll (the site header is static, so top-0 is correct). Log out lives in the
  * page header, not here.
  */
-export function AccountNav({ active }: { active: 'dashboard' | 'orders' }) {
+export function AccountNav({
+  active
+}: {
+  active: 'dashboard' | 'orders' | 'wishlist';
+}) {
   const tab = (isActive: boolean) =>
     cn(
       '-mb-px border-b-2 py-3 text-sm transition-colors',
@@ -23,6 +27,9 @@ export function AccountNav({ active }: { active: 'dashboard' | 'orders' }) {
         </a>
         <a href="/account/orders" className={tab(active === 'orders')}>
           {_('Orders')}
+        </a>
+        <a href="/account/wishlist" className={tab(active === 'wishlist')}>
+          {_('Wishlist')}
         </a>
       </div>
     </nav>

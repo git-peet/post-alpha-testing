@@ -492,6 +492,25 @@ export type CustomerAddressUpdate = Partial<
 >;
 
 // =============================================================================
+// CUSTOMER WISHLIST ITEM
+// =============================================================================
+
+export interface CustomerWishlistItemRow {
+  customer_wishlist_item_id: number;
+  customer_id: number;
+  product_uuid: string;
+  created_at: Date;
+}
+
+export type CustomerWishlistItemInsert = Omit<
+  CustomerWishlistItemRow,
+  'customer_wishlist_item_id' | 'created_at'
+>;
+export type CustomerWishlistItemUpdate = Partial<
+  Omit<CustomerWishlistItemRow, 'customer_wishlist_item_id'>
+>;
+
+// =============================================================================
 // CUSTOMER GROUP
 // =============================================================================
 
