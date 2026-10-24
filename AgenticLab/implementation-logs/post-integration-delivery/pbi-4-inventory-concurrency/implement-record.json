@@ -1,0 +1,54 @@
+{
+  "pbi": {
+    "id": "PBI-4",
+    "title": "Inventory Reservation Concurrency Regression",
+    "scope": "project:post-integration-delivery"
+  },
+  "status": "partial",
+  "startedAt": "2026-10-23T21:42:21+02:00",
+  "completedAt": "2026-10-23T21:53:57+02:00",
+  "goal": "Add a fail-closed isolated PostgreSQL integration harness for concurrent inventory reservation regressions and cross-pair contention observations.",
+  "inScope": [
+    "packages/evershop/src/modules/inventory/tests/unit/inventoryReservationConcurrency.test.ts",
+    "scripts/run-inventory-concurrency-integration.mjs"
+  ],
+  "outOfScope": [
+    "Changes to production inventory reservation behavior or advisory-lock strategy",
+    "Use of the persistent development database on port 5432",
+    "Production/customer data or cloud PostgreSQL credentials",
+    "Database integration execution without a verified dedicated disposable PostgreSQL target"
+  ],
+  "filesChanged": [
+    "packages/evershop/src/modules/inventory/tests/unit/inventoryReservationConcurrency.test.ts",
+    "scripts/run-inventory-concurrency-integration.mjs"
+  ],
+  "apiEndpoints": [],
+  "migrations": [],
+  "validation": {
+    "commands": [
+      "./node_modules/.bin/swc packages/evershop/src/modules/inventory/tests/unit/inventoryReservationConcurrency.test.ts -o packages/evershop/dist/modules/inventory/tests/unit/inventoryReservationConcurrency.test.js --config-file packages/evershop/.swcrc --strip-leading-paths",
+      "npm test -- --runTestsByPath packages/evershop/dist/modules/inventory/tests/unit/inventoryReservationConcurrency.test.js packages/evershop/dist/modules/inventory/tests/unit/inventoryService.test.js --runInBand",
+      "node --check scripts/run-inventory-concurrency-integration.mjs",
+      "node --check packages/evershop/dist/modules/inventory/tests/unit/inventoryReservationConcurrency.test.js"
+    ],
+    "results": [
+      "The new integration test compiled and was discovered, but its five database cases were skipped because INVENTORY_TEST_DATABASE was not enabled.",
+      "Existing inventory service unit tests passed: 4 tests.",
+      "Both Node syntax checks passed.",
+      "No listener was present on 127.0.0.1:5433; the persistent development PostgreSQL target on port 5432 was not used."
+    ]
+  },
+  "risks": [
+    "PBI-4 database acceptance remains unverified until a dedicated disposable loopback PostgreSQL target is available.",
+    "The runner compiles the test but only checks that the service dist file exists; it could test stale inventoryService.js after future source edits."
+  ],
+  "deviations": [
+    "Database integration tests were deferred per the approved isolation gate; no database was connected or modified."
+  ],
+  "unresolved": [
+    "Provision or otherwise verify a dedicated disposable PostgreSQL target on loopback port 5433, then run scripts/run-inventory-concurrency-integration.mjs with its INVENTORY_TEST_DB_* settings."
+  ],
+  "learningCandidates": [
+    "Compile or verify the source-to-dist freshness of the service under test in inventory integration runners; an existing compiled file alone does not prove it matches current source."
+  ]
+}
