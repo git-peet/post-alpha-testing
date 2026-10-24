@@ -2,6 +2,7 @@ import {
   classifyKnowledgeMutation,
   classifyPendingAccess,
   classifyPilotPolicyMutation,
+  classifyKnowledgeReadTrigger,
   captureTransactionLocked,
   decideKnowledgeMutation,
   shellReferencesKnowledge,
@@ -9,6 +10,8 @@ import {
 } from "./knowledge-write-policy.mjs";
 
 export function registerKnowledgeWriteGate(pi) {
+  const lookupState = new Map(); // keyed by "cwd|topicKey" → { count, lastSeen }
+
   pi.on("user_bash", async (event, ctx) => {
     if (!await shellReferencesKnowledge(ctx.cwd, event.command)) return undefined;
     return {
@@ -22,11 +25,45 @@ export function registerKnowledgeWriteGate(pi) {
   });
 
   pi.on("tool_call", async (event, ctx) => {
+    const toolName = event?.toolName;
+    if (toolName === "readKnowledgeRecords") {
+      // Agent completed the knowledge lookup for this topic — clear any pending hard-trigger state.
+      const input = event.input ?? {};
+      const topicKey = typeof input.id === "string" && input.id.trim()
+        ? input.id.trim()
+        : (typeof input.query === "string" && input.query.trim() ? input.query.trim().slice(0, 120) : "");
+      if (topicKey) {
+        lookupState.delete(`${ctx.cwd}|${topicKey}`);
+      }
+      return undefined;
+    }
+
     const command = event.input?.command;
-    if ((event.toolName === "bash" || event.toolName === "user_bash") && await shellReferencesKnowledge(ctx.cwd, command)) {
+    if ((toolName === "bash" || toolName === "user_bash") && await shellReferencesKnowledge(ctx.cwd, command)) {
       return {
         block: true,
         reason: "Shell access to AgenticLab project knowledge, the private pending queue, and pilot capture policy is blocked.",
+      };
+    }
+
+    const readTrigger = await classifyKnowledgeReadTrigger(toolName, event.input, ctx.cwd);
+    if (readTrigger) {
+      const topicKey = readTrigger.target;
+      const key = `${ctx.cwd}|${topicKey}`;
+      const prior = lookupState.get(key) ?? { count: 0, lastSeen: 0 };
+      const now = Date.now();
+      if (now - (prior.lastSeen ?? 0) > 5 * 60 * 1000) {
+        lookupState.delete(key);
+      }
+      const next = { count: (prior.count ?? 0) + 1, lastSeen: now };
+      lookupState.set(key, next);
+      if (next.count > 2) {
+        // Fail open after repeated blocks on the same topic — agent already tried and may be stuck.
+        return undefined;
+      }
+      return {
+        block: true,
+        reason: readTrigger.reason,
       };
     }
 

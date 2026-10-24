@@ -7,6 +7,8 @@ import {
   PILOT_PROJECT,
   PILOT_SCOPE,
   PILOT_WORKSPACE_ROOT,
+  listPendingCandidates,
+  promoteCandidate,
   promotePending,
   readKnowledge,
   setCaptureEnabled,
@@ -21,6 +23,8 @@ const MAX_REVIEWS = 32;
 const DISPOSITIONS = ["stage", "transient", "merge", "needs-evidence", "unsafe/out-of-scope", "abstain"];
 const DISPOSITION_SET = new Set(DISPOSITIONS);
 const REVIEW_ID_PATTERN = "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
+const validKnowledgeId = /^[a-z0-9](?:[a-z0-9-]{1,62}[a-z0-9])?$/;
+const KNOWLEDGE_CATEGORIES = ["decision", "fact", "experience", "risk", "procedure"];
 const RECORD_KEYS = ["id", "title", "category", "scope", "status", "source", "evidence", "recorded", "verified", "claim", "rationale"];
 
 function textResult(text, details) {
@@ -91,7 +95,7 @@ function validateDecision(decision) {
   return decision;
 }
 
-function validateTriageRequest(params) {
+function validateTriageRequest(params, expectedScope = PILOT_SCOPE) {
   if (!isPlainObject(params) || !hasOnlyKeys(params, ["observations", "decisions"]) || !Array.isArray(params.observations) || !Array.isArray(params.decisions)) {
     throw new Error("triage request must contain only observations and decisions arrays");
   }
@@ -116,11 +120,11 @@ function validateTriageRequest(params) {
   for (const observation of observations) {
     const decision = decisionsById.get(observation.id);
     if (!decision) throw new Error(`candidate ${observation.id} is missing a triage decision`);
-    if (decision.disposition === "stage") validateCandidate(observation);
+    if (decision.disposition === "stage") validateCandidate(observation, expectedScope);
   }
 
   const stageable = observations.filter((observation) => decisionsById.get(observation.id).disposition === "stage");
-  if (stageable.length) validateCandidateBatch(stageable);
+  if (stageable.length) validateCandidateBatch(stageable, expectedScope);
   return { observations, decisions };
 }
 
@@ -185,13 +189,14 @@ export function registerKnowledgeCaptureTools(pi, Type, StringEnum, { expectedRo
   pi.registerTool({
     name: "triageKnowledgeCandidates",
     label: "Triage knowledge candidates",
-    description: "Validate a bounded ALPHA-KNOWLEDGE-PILOT-001 candidate-observation set and exactly one structured Jev-style advisory decision per candidate. This tool performs no writes; it stores the validated review only in extension memory under a temporary reviewId.",
+    description: "Validate a bounded, workspace-scoped candidate-observation set and exactly one structured advisory decision per candidate. This tool performs no writes; it stores the validated review only in extension memory under a temporary reviewId.",
     parameters: Type.Object({
       observations: Type.Array(observationSchema, { minItems: 1, maxItems: MAX_CANDIDATES }),
       decisions: Type.Array(decisionSchema, { minItems: 1, maxItems: MAX_CANDIDATES }),
     }, { additionalProperties: false }),
-    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-      const { observations, decisions } = validateTriageRequest(params);
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const policy = await getCapturePolicy(ctx.cwd, { expectedRoot });
+      const { observations, decisions } = validateTriageRequest(params, policy.scope);
       const timestamp = now();
       pruneReviews(reviews, timestamp, reviewTtlMs);
       const reviewId = randomUUID();
@@ -215,7 +220,7 @@ export function registerKnowledgeCaptureTools(pi, Type, StringEnum, { expectedRo
   pi.registerTool({
     name: "stageKnowledgeCandidates",
     label: "Stage reviewed knowledge candidates",
-    description: "Stage only candidate records whose stored, validated transient triage review has disposition stage. Accepts a reviewId only; default-off workspace opt-in is still required. Never provide raw records or treat pending items as approved knowledge.",
+    description: "Stage only candidate records whose stored, validated transient triage review has disposition stage. Accepts a reviewId only; workspace opt-in is required. Candidates remain private and inactive, separate from promoted knowledge.",
     parameters: Type.Object({
       reviewId: Type.String({ minLength: 36, maxLength: 36, pattern: REVIEW_ID_PATTERN }),
     }, { additionalProperties: false }),
@@ -246,8 +251,9 @@ export function registerKnowledgeCaptureTools(pi, Type, StringEnum, { expectedRo
       try {
         const policy = await getCapturePolicy(ctx.cwd, { expectedRoot });
         if (!policy.pendingStagingEnabled) throw new Error("pending staging is disabled; triage remains transient");
-        const eligibleRecords = validateCandidateBatch(stageRecords);
+        const eligibleRecords = validateCandidateBatch(stageRecords, policy.scope);
         const result = await stageCandidates(ctx.cwd, eligibleRecords, { expectedRoot });
+        await recordKnowledgeCaptureMetric("candidate_staged", { workspaceRoot: ctx.cwd }).catch(() => {});
         reviews.delete(reviewId);
         const details = { ...result, reviewId, stagedIds: eligibleRecords.map((record) => record.id) };
         return textResult(`Staged ${result.count} reviewed candidate record(s) in the private pending queue. They remain inactive and are not approved knowledge.`, details);
@@ -259,9 +265,49 @@ export function registerKnowledgeCaptureTools(pi, Type, StringEnum, { expectedRo
   });
 
   pi.registerTool({
+    name: "listPendingKnowledgeCandidates",
+    label: "List pending knowledge candidate metadata",
+    description: "List IDs and review metadata for private pending candidates in the configured workspace scope. Does not return claims, evidence, or rationale; use the candidate promotion preview to review full content before approval.",
+    parameters: Type.Object({}, { additionalProperties: false }),
+    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+      const result = await listPendingCandidates(ctx.cwd, { expectedRoot });
+      const summary = {
+        status: result.status,
+        count: result.count,
+        candidates: result.candidates,
+      };
+      return textResult(JSON.stringify(summary, null, 2), summary);
+    },
+  });
+
+  pi.registerTool({
+    name: "promoteKnowledgeCandidate",
+    label: "Review and promote one pending knowledge candidate",
+    description: "Promote one selected, reviewed pending candidate into the existing active knowledge collection. Requires one UI confirmation, creates one new active record, never overwrites existing records, and leaves every other pending candidate untouched.",
+    parameters: Type.Object({
+      id: Type.String({ minLength: 1, maxLength: 64, pattern: "^[a-z0-9](?:[a-z0-9-]{1,62}[a-z0-9])?$" }),
+    }, { additionalProperties: false }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      if (!isPlainObject(params) || !hasOnlyKeys(params, ["id"]) || typeof params.id !== "string") {
+        throw new Error("promotion tool accepts only a candidate id");
+      }
+      if (!ctx?.hasUI || typeof ctx.ui?.confirm !== "function") throw new Error("Candidate promotion requires an available Pi UI confirmation");
+      const result = await promoteCandidate(ctx.cwd, params.id, (preview) => ctx.ui.confirm(
+        "Promote this knowledge candidate?",
+        preview,
+      ), { expectedRoot, hooks });
+      if (result.status === "rejected") return textResult("Promotion was rejected. The candidate remains pending and no active record was created.", result);
+      if (result.status === "already_active") return textResult("An identical active record already exists; the confirmed pending duplicate was removed.", result);
+      await recordKnowledgeCaptureMetric("decision_knowledge", { workspaceRoot: ctx.cwd }).catch(() => {});
+      const warning = result.warnings.length ? ` Warnings: ${result.warnings.join(" ")}` : " The pending candidate was consumed.";
+      return textResult(`Promotion committed: ${result.id} is active.${warning}`, result);
+    },
+  });
+
+  pi.registerTool({
     name: "promoteKnowledgeBatch",
-    label: "Review and promote pending knowledge batch",
-    description: "Review every pending ALPHA-KNOWLEDGE-PILOT-001 candidate as one complete batch. Requires UI confirmation, refuses any existing active knowledge root, and never merges or repeats promotion.",
+    label: "Legacy empty-store pilot promotion",
+    description: "Legacy one-time ALPHA-KNOWLEDGE-PILOT-001 bootstrap only. Requires an empty active knowledge root; it cannot promote into or merge with a populated store. Use promoteKnowledgeCandidate for one-at-a-time additive promotion.",
     parameters: Type.Object({}, { additionalProperties: false }),
     async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
       if (!ctx?.hasUI || typeof ctx.ui?.confirm !== "function") throw new Error("Batch promotion requires an available Pi UI confirmation");
@@ -278,22 +324,38 @@ export function registerKnowledgeCaptureTools(pi, Type, StringEnum, { expectedRo
   pi.registerTool({
     name: "readKnowledgeRecords",
     label: "Read promoted knowledge records",
-    description: "Browse or search promoted ALPHA-KNOWLEDGE-PILOT-001 records in AgenticLab/knowledge/. Accepts an optional id (exact match) or query (substring match). Returns content-free metadata and the record body for verification only; never emits business data. A retrieval_success metric fires only when at least one promoted record is matched.",
+    description: "Read active, in-scope project records from AgenticLab/knowledge/. Accepts an optional exact record id or query, with optional task scope and category filters. Only eligible record bodies are returned; incomplete scans are not reported as no-match. Retrieval metrics contain only the event and timestamp.",
     parameters: Type.Object({
       id: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
       query: Type.Optional(Type.String({ minLength: 1, maxLength: 512 })),
+      scope: Type.Optional(Type.String({ minLength: 1, maxLength: 160 })),
+      category: Type.Optional(StringEnum(KNOWLEDGE_CATEGORIES)),
     }, { additionalProperties: false }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      if (!isPlainObject(params) || !hasOnlyKeys(params, ["id", "query"])) {
-        throw new Error("read tool accepts only id and query");
+      if (!isPlainObject(params) || !hasOnlyKeys(params, ["id", "query", "scope", "category"])) {
+        throw new Error("read tool accepts only id, query, scope, and category");
       }
-      const result = await readKnowledge(ctx.cwd, { id: params.id, query: params.query }, { expectedRoot });
-      if (result.status === "ok" && result.count > 0) {
+      const cleanId = typeof params.id === "string" && validKnowledgeId.test(params.id.trim()) ? params.id.trim() : undefined;
+      if (params.id !== undefined && !cleanId && !(typeof params.query === "string" && params.query.trim())) {
+        throw new Error("id must be a valid record ID unless a query is also supplied");
+      }
+      const result = await readKnowledge(ctx.cwd, {
+        id: cleanId,
+        query: params.query,
+        scope: params.scope,
+        category: params.category,
+      }, { expectedRoot });
+      if ((result.status === "ok" || result.status === "incomplete") && result.count > 0) {
         recordKnowledgeCaptureMetric("retrieval_success", { workspaceRoot: ctx.cwd }).catch(() => {});
+      } else if (result.status === "no_match" || result.status === "not_found") {
+        recordKnowledgeCaptureMetric("no_match", { workspaceRoot: ctx.cwd }).catch(() => {});
       }
       const summary = {
         status: result.status,
         count: result.count,
+        complete: result.complete,
+        searched: result.searched,
+        filteredCount: result.filteredCount,
         matches: result.matches?.map((record) => ({
           id: record.id,
           title: record.title,
@@ -302,32 +364,34 @@ export function registerKnowledgeCaptureTools(pi, Type, StringEnum, { expectedRo
           status: record.status,
           file: record.file,
         })) ?? [],
+        filtered: result.filtered,
       };
-      if (result.note) summary.note = result.note;
-      if (result.searched !== undefined) summary.searched = result.searched;
+      for (const key of ["note", "issues", "totalMatches", "truncated"]) {
+        if (result[key] !== undefined) summary[key] = result[key];
+      }
       return textResult(JSON.stringify(summary, null, 2), summary);
     },
   });
   pi.registerCommand("knowledge-opt-in", {
-    description: "Explicitly enable candidate staging for ALPHA-KNOWLEDGE-PILOT-001 in this workspace",
+    description: "Explicitly enable private pending-candidate staging for the configured workspace scope",
     handler: async (_args, ctx) => {
       try {
         const policy = await getCapturePolicy(ctx.cwd, { expectedRoot });
         if (policy.pendingStagingEnabled) {
-          notify(ctx, "ALPHA-KNOWLEDGE-PILOT-001 pending staging is already enabled for this workspace.");
+          notify(ctx, `Pending candidate staging is already enabled for ${policy.scope}.`);
           return;
         }
         const accepted = await askOnce(
           ctx,
-          "Enable pilot candidate staging?",
-          `This enables only private candidate staging for ${PILOT_PROJECT} in this workspace. Candidates remain pending/inactive and require a separate one-batch promotion approval. No candidate is created by opting in.`,
+          "Enable pending candidate staging?",
+          `This enables private pending-candidate staging for ${policy.scope}. Candidates remain inactive and are not approved knowledge; promotion is a separate action. No candidate is created by opting in.`,
         );
         if (!accepted) {
-          notify(ctx, "Pilot candidate staging remains disabled.", "info");
+          notify(ctx, "Pending candidate staging remains disabled.", "info");
           return;
         }
         await setCaptureEnabled(ctx.cwd, true, { expectedRoot });
-        notify(ctx, "Pilot candidate staging enabled. No candidate was staged.", "success");
+        notify(ctx, `Pending candidate staging enabled for ${policy.scope}. No candidate was staged.`, "success");
       } catch (error) {
         notify(ctx, `Could not enable pilot candidate staging: ${error.message}`, "error");
       }
@@ -335,12 +399,12 @@ export function registerKnowledgeCaptureTools(pi, Type, StringEnum, { expectedRo
   });
 
   pi.registerCommand("knowledge-opt-out", {
-    description: "Revoke the ALPHA-KNOWLEDGE-PILOT-001 candidate-staging opt-in for this workspace",
+    description: "Revoke private pending-candidate staging for the configured workspace scope",
     handler: async (_args, ctx) => {
       try {
         const policy = await getCapturePolicy(ctx.cwd, { expectedRoot });
         if (!policy.pendingStagingEnabled) {
-          notify(ctx, "Pilot candidate staging is already disabled.");
+          notify(ctx, "Pending candidate staging is already disabled.");
           return;
         }
         const accepted = await askOnce(
@@ -349,11 +413,11 @@ export function registerKnowledgeCaptureTools(pi, Type, StringEnum, { expectedRo
           "This disables further candidate staging in this workspace. Existing pending candidates will remain untouched and inactive.",
         );
         if (!accepted) {
-          notify(ctx, "Pilot candidate staging remains enabled.", "info");
+          notify(ctx, "Pending candidate staging remains enabled.", "info");
           return;
         }
         await setCaptureEnabled(ctx.cwd, false, { expectedRoot });
-        notify(ctx, "Pilot candidate staging disabled. Existing pending candidates were left untouched.", "success");
+        notify(ctx, "Pending candidate staging disabled. Existing pending candidates were left untouched.", "success");
       } catch (error) {
         notify(ctx, `Could not revoke pilot candidate staging: ${error.message}`, "error");
       }

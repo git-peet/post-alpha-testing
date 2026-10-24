@@ -116,7 +116,7 @@ function validateSource(source) {
   }
 }
 
-export function validateCandidate(candidate) {
+export function validateCandidate(candidate, expectedScope = PILOT_SCOPE) {
   if (!isPlainObject(candidate) || !hasOnlyKeys(candidate, RECORD_KEYS) || RECORD_KEYS.some((key) => !(key in candidate))) {
     fail("candidate does not match the strict pilot knowledge-record schema");
   }
@@ -125,7 +125,7 @@ export function validateCandidate(candidate) {
   }
   requireText(candidate.title, "title", 160);
   if (!CATEGORIES.has(candidate.category)) fail("candidate.category is not an allowed knowledge category");
-  if (candidate.scope !== PILOT_SCOPE) fail(`candidate.scope must equal ${PILOT_SCOPE}`);
+  if (candidate.scope !== expectedScope) fail(`candidate.scope must equal ${expectedScope}`);
   if (candidate.status !== "candidate") fail("new staged records must have lifecycle status candidate");
   validateSource(candidate.source);
   requireText(candidate.evidence, "evidence", 1200, { multiline: true });
@@ -141,14 +141,14 @@ export function validateCandidate(candidate) {
   return candidate;
 }
 
-export function validateCandidateBatch(records) {
+export function validateCandidateBatch(records, expectedScope = PILOT_SCOPE) {
   if (!Array.isArray(records) || records.length === 0 || records.length > MAX_CANDIDATES) {
     fail(`records must contain between 1 and ${MAX_CANDIDATES} candidates`);
   }
   const ids = new Set();
   let totalBytes = 0;
   for (const record of records) {
-    validateCandidate(record);
+    validateCandidate(record, expectedScope);
     if (ids.has(record.id)) fail(`duplicate candidate id: ${record.id}`);
     ids.add(record.id);
     totalBytes += Buffer.byteLength(JSON.stringify(record), "utf8");
@@ -221,16 +221,30 @@ async function readBoundedRegularFile(filePath, maxBytes) {
 }
 
 function parsePolicy(value, workspaceRoot) {
-  if (!isPlainObject(value) || !hasOnlyKeys(value, ["schemaVersion", "project", "workspaceRoot", "pendingStagingEnabled"])) fail("pilot capture policy has an invalid shape");
-  if (value.schemaVersion !== 1 || value.project !== PILOT_PROJECT || value.workspaceRoot !== workspaceRoot || typeof value.pendingStagingEnabled !== "boolean") {
-    fail("pilot capture policy does not match this workspace or version");
+  const allowedKeys = ["schemaVersion", "project", "workspaceRoot", "pendingStagingEnabled", "metricsEnabled", "scope", "maxCandidates", "requiredFields"];
+  if (!isPlainObject(value) || !hasOnlyKeys(value, allowedKeys)) fail("capture policy has an invalid shape");
+  if ((value.schemaVersion !== undefined && value.schemaVersion !== 1) || typeof value.pendingStagingEnabled !== "boolean") {
+    fail("capture policy has an unsupported version or invalid staging setting");
   }
-  return value;
+  if (value.project !== undefined) requireText(value.project, "project", 160);
+  if (value.workspaceRoot !== undefined && value.workspaceRoot !== workspaceRoot) fail("capture policy does not match this workspace");
+  if (value.metricsEnabled !== undefined && typeof value.metricsEnabled !== "boolean") fail("capture policy metricsEnabled must be a boolean");
+
+  const scope = value.scope ?? (value.project ? `project:${value.project}` : PILOT_SCOPE);
+  requireText(scope, "scope", 160);
+  if (!scope.startsWith("project:")) fail("capture policy scope must identify a project");
+  if (value.maxCandidates !== undefined && (!Number.isSafeInteger(value.maxCandidates) || value.maxCandidates < 1 || value.maxCandidates > MAX_PENDING_CANDIDATES)) {
+    fail(`capture policy maxCandidates must be between 1 and ${MAX_PENDING_CANDIDATES}`);
+  }
+  if (value.requiredFields !== undefined && (!Array.isArray(value.requiredFields) || value.requiredFields.some((field) => typeof field !== "string" || !RECORD_KEYS.includes(field)))) {
+    fail("capture policy requiredFields contains an unsupported record field");
+  }
+  return { ...value, scope };
 }
 
 async function loadPolicy(locations) {
   const stat = await lstatOrNull(locations.policyPath);
-  if (!stat) return { schemaVersion: 1, project: PILOT_PROJECT, workspaceRoot: locations.workspaceRoot, pendingStagingEnabled: false, missing: true };
+  if (!stat) return { schemaVersion: 1, project: PILOT_PROJECT, workspaceRoot: locations.workspaceRoot, pendingStagingEnabled: false, scope: PILOT_SCOPE, missing: true };
   if (!stat.isFile() || stat.isSymbolicLink()) fail("pilot capture policy must be a regular, non-symlink file");
   let parsed;
   try {
@@ -246,12 +260,9 @@ async function writePolicy(locations, enabled) {
   const current = await loadPolicy(locations);
   if (current.missing) fail("pilot capture policy file is missing; opt-in cannot create or replace it");
   const tempPath = path.join(locations.agenticDir, `.knowledge-capture-policy-${randomUUID()}.tmp`);
-  const content = `${JSON.stringify({
-    schemaVersion: 1,
-    project: PILOT_PROJECT,
-    workspaceRoot: locations.workspaceRoot,
-    pendingStagingEnabled: enabled,
-  }, null, 2)}\n`;
+  const preservedPolicy = { ...current };
+  delete preservedPolicy.missing;
+  const content = `${JSON.stringify({ ...preservedPolicy, pendingStagingEnabled: enabled }, null, 2)}\n`;
   let handle;
   try {
     handle = await fs.open(tempPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | NOFOLLOW, 0o600);
@@ -292,12 +303,18 @@ function ensureDirectoryOrAbsent(target, label) {
   });
 }
 
-async function readPendingBundle(locations, batchName) {
+async function readPendingBundle(locations, batchName, expectedScope = PILOT_SCOPE) {
   if (!/^batch-[0-9a-f-]{36}$/u.test(batchName)) fail("pending queue contains an unexpected entry");
   const batchPath = path.join(locations.pendingRoot, batchName);
   const batchStat = await fs.lstat(batchPath);
   if (!batchStat.isDirectory() || batchStat.isSymbolicLink() || await fs.realpath(batchPath) !== batchPath) fail("pending batch must be a real directory");
-  const entries = await fs.readdir(batchPath, { withFileTypes: true });
+  let entries = await fs.readdir(batchPath, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!/^\.bundle-[0-9a-f-]{36}\.tmp$/u.test(entry.name)) continue;
+    if (!entry.isFile() || entry.isSymbolicLink()) fail("pending batch contains an unsafe temporary bundle entry");
+    await fs.unlink(path.join(batchPath, entry.name));
+  }
+  entries = await fs.readdir(batchPath, { withFileTypes: true });
   if (entries.length !== 1 || entries[0].name !== "bundle.json" || !entries[0].isFile()) fail("pending batch has an unexpected or linked entry");
   const raw = await readBoundedRegularFile(path.join(batchPath, "bundle.json"), MAX_BATCH_BYTES + 2048);
   let bundle;
@@ -309,17 +326,24 @@ async function readPendingBundle(locations, batchName) {
   if (!isPlainObject(bundle) || !hasOnlyKeys(bundle, ["schemaVersion", "batchId", "records"]) || bundle.schemaVersion !== 1 || bundle.batchId !== batchName) {
     fail(`pending batch ${batchName} has an invalid envelope`);
   }
-  const records = validateCandidateBatch(bundle.records);
+  const records = validateCandidateBatch(bundle.records, expectedScope);
   return records;
 }
 
-async function readAllPending(locations) {
+async function readAllPending(locations, expectedScope = PILOT_SCOPE) {
   const exists = await ensureDirectoryOrAbsent(locations.pendingRoot, "pending root");
   if (!exists) return [];
   if (await fs.realpath(locations.pendingRoot) !== locations.pendingRoot) fail("pending root resolves outside its expected location");
   const directory = await fs.opendir(locations.pendingRoot);
   const entries = [];
   for await (const entry of directory) {
+    if (entry.name.startsWith(".consumed-")) {
+      if (!/^\.consumed-batch-[0-9a-f-]{36}$/u.test(entry.name) || !entry.isDirectory() || entry.isSymbolicLink()) {
+        fail("pending queue contains an unexpected consumed-batch entry");
+      }
+      await removeOwnedTempDirectory(path.join(locations.pendingRoot, entry.name));
+      continue;
+    }
     entries.push(entry);
     if (entries.length > MAX_PENDING_CANDIDATES) fail(`pending queue exceeds ${MAX_PENDING_CANDIDATES} candidate batches`);
   }
@@ -327,7 +351,7 @@ async function readAllPending(locations) {
   const ids = new Set();
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.isSymbolicLink()) fail("pending queue contains an unexpected or linked entry");
-    const records = await readPendingBundle(locations, entry.name);
+    const records = await readPendingBundle(locations, entry.name, expectedScope);
     for (const record of records) {
       if (ids.has(record.id)) fail(`pending queue contains colliding candidate id: ${record.id}`);
       ids.add(record.id);
@@ -336,6 +360,79 @@ async function readAllPending(locations) {
     }
   }
   return all.sort((a, b) => a.id.localeCompare(b.id));
+}
+
+async function locatePendingCandidate(locations, id, expectedScope) {
+  const allRecords = await readAllPending(locations, expectedScope);
+  const candidate = allRecords.find((record) => record.id === id);
+  if (!candidate) return null;
+
+  const directory = await fs.opendir(locations.pendingRoot);
+  let located = null;
+  for await (const entry of directory) {
+    if (entry.name.startsWith(".consumed-")) continue;
+    if (!entry.isDirectory() || entry.isSymbolicLink()) fail("pending queue contains an unexpected or linked entry");
+    const records = await readPendingBundle(locations, entry.name, expectedScope);
+    if (!records.some((record) => record.id === id)) continue;
+    if (located) fail(`candidate ID appears in more than one pending batch: ${id}`);
+    located = { batchId: entry.name, candidate, records };
+  }
+  return located;
+}
+
+async function consumePendingCandidate(locations, batchId, id, expectedCandidate, expectedScope, hooks = {}) {
+  const batchPath = path.join(locations.pendingRoot, batchId);
+  const records = await readPendingBundle(locations, batchId, expectedScope);
+  const candidate = records.find((record) => record.id === id);
+  if (!candidate || JSON.stringify(candidate) !== JSON.stringify(expectedCandidate)) {
+    fail("pending candidate changed before its approved promotion could be consumed");
+  }
+  await hooks.beforePendingConsume?.(batchId, id);
+
+  if (records.length === 1) {
+    const consumedPath = path.join(locations.pendingRoot, `.consumed-${batchId}`);
+    if (await lstatOrNull(consumedPath)) fail("consumed-batch cleanup path unexpectedly exists");
+    await fs.rename(batchPath, consumedPath);
+    const warnings = [];
+    try {
+      await hooks.afterPendingDetach?.(consumedPath);
+    } catch (error) {
+      warnings.push(`Pending candidate was detached, but cleanup hook failed: ${error.message}`);
+    }
+    try {
+      await removeOwnedTempDirectory(consumedPath);
+    } catch (error) {
+      warnings.push(`Pending candidate was detached, but its consumed batch could not be removed: ${error.message}`);
+    }
+    try {
+      if ((await fs.readdir(locations.pendingRoot)).length === 0) await fs.rmdir(locations.pendingRoot);
+    } catch (error) {
+      if (error?.code !== "ENOENT") warnings.push(`Pending candidate was detached, but the empty queue could not be removed: ${error.message}`);
+    }
+    return { pendingConsumed: true, warnings };
+  }
+
+  const remaining = records.filter((record) => record.id !== id);
+  const bundlePath = path.join(batchPath, "bundle.json");
+  const bundleStat = await fs.lstat(bundlePath);
+  if (!bundleStat.isFile() || bundleStat.isSymbolicLink()) fail("pending bundle changed to an unsafe file before consumption");
+  const replacementPath = path.join(batchPath, `.bundle-${randomUUID()}.tmp`);
+  const bundle = { schemaVersion: 1, batchId, records: remaining };
+  try {
+    await writeExclusiveFile(replacementPath, `${JSON.stringify(bundle, null, 2)}\n`);
+    await hooks.beforePendingReplace?.(batchId, id);
+    await fs.rename(replacementPath, bundlePath);
+  } catch (error) {
+    await fs.unlink(replacementPath).catch(() => {});
+    throw error;
+  }
+  const warnings = [];
+  try {
+    await hooks.afterPendingReplace?.(batchId, id);
+  } catch (error) {
+    warnings.push(`Pending candidate was removed from its batch, but cleanup hook failed: ${error.message}`);
+  }
+  return { pendingConsumed: true, warnings };
 }
 
 async function createPendingRoot(locations) {
@@ -370,27 +467,61 @@ async function removeOwnedTempDirectory(tempPath) {
   await fs.rm(tempPath, { recursive: true, force: false });
 }
 
+async function readActiveRecordIds(locations) {
+  const activeStat = await lstatOrNull(locations.activeRoot);
+  if (!activeStat) return new Set();
+  if (!activeStat.isDirectory() || activeStat.isSymbolicLink() || await fs.realpath(locations.activeRoot) !== locations.activeRoot) {
+    fail("active knowledge root must be a real directory before candidate staging");
+  }
+
+  const inventory = await collectActiveRecordPaths(locations.activeRoot);
+  if (inventory.issues.length) fail(`active record inventory is incomplete: ${inventory.issues[0].reason}`);
+  const ids = new Set();
+  for (const filePath of inventory.files) {
+    const header = await readRecordMetadataHeader(filePath);
+    if (header.kind === "map") continue;
+    if (header.kind !== "record") fail(`active record metadata is incomplete: ${path.relative(locations.activeRoot, filePath)}`);
+    const relativePath = path.relative(locations.activeRoot, filePath).split(path.sep).join("/");
+    const filenameId = path.basename(filePath, ".md");
+    const id = header.meta.id;
+    if (typeof id !== "string" || !/^[a-z0-9](?:[a-z0-9-]{1,62}[a-z0-9])?$/u.test(id) || id !== filenameId) {
+      fail(`active record ID is invalid or does not match its filename: ${relativePath}`);
+    }
+    if (ids.has(id)) fail(`active knowledge contains a duplicate record ID: ${id}`);
+    ids.add(id);
+  }
+  return ids;
+}
+
 export async function stageCandidates(cwd, records, { expectedRoot = PILOT_WORKSPACE_ROOT } = {}) {
-  const candidates = validateCandidateBatch(records);
   const locations = await resolvePilotLocations(cwd, expectedRoot);
   return withCaptureLock(locations, async () => {
-    await assertPromotionNotCommitted(locations);
-    await activeRootIsAbsent(locations);
     const policy = await loadPolicy(locations);
     if (!policy.pendingStagingEnabled) fail("pending staging is disabled; use /knowledge-opt-in after explicit workspace approval");
-    await createPendingRoot(locations);
-    const existing = await readAllPending(locations);
-    if (existing.length + candidates.length > MAX_PENDING_CANDIDATES) fail(`pending queue is limited to ${MAX_PENDING_CANDIDATES} candidates`);
+    if (policy.scope === PILOT_SCOPE) await assertPromotionNotCommitted(locations);
+
+    const candidates = validateCandidateBatch(records, policy.scope);
+    const maxCandidates = Math.min(policy.maxCandidates ?? MAX_PENDING_CANDIDATES, MAX_PENDING_CANDIDATES);
+    if (candidates.length > maxCandidates) fail(`candidate batch is limited to ${maxCandidates} candidates by workspace policy`);
+
+    const activeIds = await readActiveRecordIds(locations);
+    for (const candidate of candidates) {
+      if (activeIds.has(candidate.id)) fail(`candidate ID already exists in active knowledge: ${candidate.id}`);
+    }
+
+    const existing = await readAllPending(locations, policy.scope);
+    if (existing.length + candidates.length > maxCandidates) fail(`pending queue is limited to ${maxCandidates} candidates by workspace policy`);
     const existingIds = new Set(existing.map((record) => record.id));
     for (const candidate of candidates) {
       if (existingIds.has(candidate.id)) fail(`candidate id already exists in pending queue: ${candidate.id}`);
     }
 
+    await createPendingRoot(locations);
     const batchId = `batch-${randomUUID()}`;
     const finalPath = path.join(locations.pendingRoot, batchId);
     const bundle = { schemaVersion: 1, batchId, records: candidates };
     const bundleText = `${JSON.stringify(bundle, null, 2)}\n`;
-    if (Buffer.byteLength(bundleText, "utf8") > MAX_BATCH_BYTES + 2048) fail(`serialized candidate batch exceeds ${MAX_BATCH_BYTES} bytes`);
+    if (Buffer.byteLength(bundleText, "utf8") > MAX_BATCH_BYTES + 2048) fail(`serialized candidate batch exceeds ${MAX_BATCH_BYTES + 2048} bytes`);
     const tempPath = await fs.mkdtemp(path.join(locations.pendingRoot, ".staging-"));
     try {
       await writeExclusiveFile(path.join(tempPath, "bundle.json"), bundleText);
@@ -415,16 +546,19 @@ function escapeLinkLabel(text) {
 export function renderActiveRecord(record) {
   const source = `${record.source.kind}: ${record.source.reference}${record.source.revision ? ` (revision ${record.source.revision})` : ""}`;
   return [
-    `# ${record.title}`,
+    "---",
+    `id: ${JSON.stringify(record.id)}`,
+    `title: ${JSON.stringify(record.title)}`,
+    `category: ${JSON.stringify(record.category)}`,
+    `scope: ${JSON.stringify(record.scope)}`,
+    'status: "active"',
+    `source: ${JSON.stringify(source)}`,
+    `evidence: ${JSON.stringify(record.evidence)}`,
+    `recorded: ${JSON.stringify(record.recorded)}`,
+    `verified: ${JSON.stringify(record.verified)}`,
+    "---",
     "",
-    `- **ID:** ${record.id}`,
-    `- **Category:** ${record.category}`,
-    `- **Scope:** ${record.scope}`,
-    "- **Status:** active",
-    `- **Source:** ${source}`,
-    `- **Evidence:** ${record.evidence.replaceAll("\n", " ")}`,
-    `- **Recorded:** ${record.recorded}`,
-    `- **Verified:** ${record.verified}`,
+    `# ${record.title}`,
     "",
     "## Claim or decision",
     "",
@@ -579,8 +713,137 @@ export async function promotePending(cwd, confirm, { expectedRoot = PILOT_WORKSP
   });
 }
 
+export function renderCandidatePromotionPreview(record, { alreadyActive = false } = {}) {
+  const location = `AgenticLab/knowledge/${record.id}.md`;
+  const parts = [
+    alreadyActive
+      ? `Confirm cleanup of pending candidate ${record.id}; an identical active record already exists.`
+      : `Promote one pending candidate (${record.id}) into the existing active knowledge collection.`,
+    `Target: ${location}`,
+    `Scope: ${record.scope}`,
+    alreadyActive
+      ? "No active record will be written or changed; only the duplicate pending copy will be removed."
+      : "The operation adds exactly one new record. Existing active records, INDEX.md, and topic maps will not be changed.",
+    "Other pending candidates will remain pending. Promotion requires this explicit confirmation.",
+    "",
+    "## Complete active record preview",
+    "```markdown",
+    renderActiveRecord(record).trimEnd(),
+    "```",
+  ];
+  const preview = parts.join("\n");
+  if (Buffer.byteLength(preview, "utf8") > MAX_PREVIEW_BYTES) fail(`complete candidate promotion preview exceeds ${MAX_PREVIEW_BYTES} bytes`);
+  return preview;
+}
+
+export async function listPendingCandidates(cwd, { expectedRoot = PILOT_WORKSPACE_ROOT } = {}) {
+  const locations = await resolvePilotLocations(cwd, expectedRoot);
+  return withCaptureLock(locations, async () => {
+    const policy = await loadPolicy(locations);
+    const records = await readAllPending(locations, policy.scope);
+    return {
+      status: records.length ? "ok" : "empty",
+      count: records.length,
+      candidates: records.map(({ id, title, category, scope, status, recorded }) => ({ id, title, category, scope, status, recorded })),
+    };
+  });
+}
+
+export async function promoteCandidate(cwd, id, confirm, { expectedRoot = PILOT_WORKSPACE_ROOT, hooks = {} } = {}) {
+  if (typeof id !== "string" || !/^[a-z0-9](?:[a-z0-9-]{1,62}[a-z0-9])?$/u.test(id)) fail("promotion requires a valid candidate ID");
+  if (typeof confirm !== "function") fail("candidate promotion requires an available UI confirmation function");
+  const locations = await resolvePilotLocations(cwd, expectedRoot);
+  return withCaptureLock(locations, async () => {
+    const policy = await loadPolicy(locations);
+    const activeStat = await lstatOrNull(locations.activeRoot);
+    if (!activeStat || !activeStat.isDirectory() || activeStat.isSymbolicLink() || await fs.realpath(locations.activeRoot) !== locations.activeRoot) {
+      fail("additive candidate promotion requires an existing real AgenticLab/knowledge directory");
+    }
+
+    const located = await locatePendingCandidate(locations, id, policy.scope);
+    if (!located) fail(`no pending candidate with ID "${id}" exists`);
+    const { candidate, batchId } = located;
+    const recordContent = renderActiveRecord(candidate);
+    if (Buffer.byteLength(recordContent, "utf8") > MAX_RECORD_BYTES) fail(`promoted record exceeds ${MAX_RECORD_BYTES} bytes`);
+
+    const activeIds = await readActiveRecordIds(locations);
+    let alreadyActive = activeIds.has(id);
+    if (alreadyActive) {
+      const activeContent = await readBoundedRegularFile(path.join(locations.activeRoot, `${id}.md`), MAX_RECORD_BYTES);
+      if (activeContent !== recordContent) fail(`active record ID collision: ${id}`);
+    }
+
+    const snapshot = pendingSnapshot([candidate]);
+    const approved = await confirm(renderCandidatePromotionPreview(candidate, { alreadyActive }));
+    if (approved !== true) return { promoted: false, status: "rejected", count: 1, pendingConsumed: false, warnings: [] };
+
+    const currentPolicy = await loadPolicy(locations);
+    if (currentPolicy.scope !== policy.scope) fail("workspace knowledge scope changed during candidate promotion review");
+    const currentLocated = await locatePendingCandidate(locations, id, currentPolicy.scope);
+    if (!currentLocated || pendingSnapshot([currentLocated.candidate]) !== snapshot || currentLocated.batchId !== batchId) {
+      fail("pending candidate changed during promotion review; no active record was written");
+    }
+
+    const currentActiveIds = await readActiveRecordIds(locations);
+    const currentAlreadyActive = currentActiveIds.has(id);
+    if (currentAlreadyActive !== alreadyActive) fail("active record state changed during promotion review; retry with a fresh preview");
+    if (currentAlreadyActive) {
+      const activeContent = await readBoundedRegularFile(path.join(locations.activeRoot, `${id}.md`), MAX_RECORD_BYTES);
+      if (activeContent !== recordContent) fail(`active record ID collision: ${id}`);
+    }
+
+    const warnings = [];
+    if (!currentAlreadyActive) {
+      const tempDir = await fs.mkdtemp(path.join(locations.activeRoot, `.promotion-${randomUUID()}-`));
+      const tempRecordPath = path.join(tempDir, `${id}.md`);
+      const activeRecordPath = path.join(locations.activeRoot, `${id}.md`);
+      try {
+        await writeExclusiveFile(tempRecordPath, recordContent);
+        await hooks.beforePublish?.(tempRecordPath, activeRecordPath);
+        if (await lstatOrNull(activeRecordPath)) fail(`active record ID collision: ${id}`);
+        await fs.link(tempRecordPath, activeRecordPath);
+      } catch (error) {
+        await removeOwnedTempDirectory(tempDir).catch(() => {});
+        throw error;
+      }
+      try {
+        await removeOwnedTempDirectory(tempDir);
+      } catch (error) {
+        warnings.push(`Active record was published, but its temporary directory could not be removed: ${error.message}`);
+      }
+      try {
+        await hooks.afterPublish?.(activeRecordPath);
+      } catch (error) {
+        warnings.push(`Active record was published, but the post-publish hook failed: ${error.message}`);
+      }
+    }
+
+    let pendingConsumed = false;
+    try {
+      const cleanup = await consumePendingCandidate(locations, batchId, id, candidate, policy.scope, hooks);
+      pendingConsumed = cleanup.pendingConsumed;
+      warnings.push(...cleanup.warnings);
+    } catch (error) {
+      warnings.push(`Active record ${currentAlreadyActive ? "was already present" : "was published"}, but the pending candidate could not be removed: ${error.message}`);
+    }
+
+    return {
+      promoted: !currentAlreadyActive,
+      status: currentAlreadyActive ? "already_active" : "active",
+      count: 1,
+      id,
+      location: `AgenticLab/knowledge/${id}.md`,
+      pendingConsumed,
+      warnings,
+    };
+  });
+}
+
 const MAX_RETRIEVAL_RESULTS = 20;
 const MAX_RETRIEVAL_BYTES = 64 * 1024;
+const MAX_METADATA_BYTES = 4096;
+const MAX_RECORD_FILES = 1000;
+const VALID_RECORD_STATUSES = new Set(["active", "candidate", "inactive", "stale", "superseded"]);
 
 function parseFrontMatter(text) {
   const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text);
@@ -589,80 +852,300 @@ function parseFrontMatter(text) {
   for (const line of match[1].split(/\r?\n/)) {
     const field = /^([A-Za-z][A-Za-z0-9_-]*):\s*(.*)$/.exec(line);
     if (!field) continue;
-    meta[field[1]] = field[2].trim().replace(/^["']|["']$/g, "");
+    const rawValue = field[2].trim();
+    if (rawValue.startsWith('"') && rawValue.endsWith('"')) {
+      try {
+        meta[field[1]] = JSON.parse(rawValue);
+        continue;
+      } catch {
+        // Preserve unparseable quoted YAML as text instead of dropping metadata.
+      }
+    }
+    meta[field[1]] = rawValue.replace(/^["']|["']$/g, "");
   }
   return { meta, body: text.slice(match[0].length) };
 }
 
-export async function readKnowledge(cwd, { id, query, limit = MAX_RETRIEVAL_RESULTS } = {}, { expectedRoot = PILOT_WORKSPACE_ROOT } = {}) {
+function parseMarkdownRecordHeader(text) {
+  const meta = {};
+  let title = "";
+  for (const line of text.split(/\r?\n/u)) {
+    if (!title) {
+      const heading = /^#\s+(.+?)\s*$/u.exec(line);
+      if (heading) title = heading[1];
+    }
+    if (/^\s*(?:-\s+)?\*\*Map ID:\*\*/u.test(line) || /^\s*Map ID:/u.test(line)) return { kind: "map" };
+    const field = /^\s*-\s+\*\*(ID|Category|Scope|Status|Recorded|Verified):\*\*\s*(.*)$/iu.exec(line);
+    if (field) {
+      const key = field[1].toLowerCase();
+      meta[key] = field[2].trim().replace(/^`|`$/gu, "").replace(/^['"]|['"]$/gu, "");
+    }
+    if (/^##\s/u.test(line)) {
+      if (title && ["id", "category", "scope", "status", "recorded", "verified"].every((key) => meta[key])) {
+        return { kind: "record", meta: { ...meta, title } };
+      }
+      return { kind: "invalid", reason: "record metadata header is incomplete" };
+    }
+  }
+  if (title && ["id", "category", "scope", "status", "recorded", "verified"].every((key) => meta[key])) {
+    return { kind: "record", meta: { ...meta, title } };
+  }
+  return { kind: "pending" };
+}
+
+async function readRecordMetadataHeader(filePath) {
+  const handle = await fs.open(filePath, fsConstants.O_RDONLY | NOFOLLOW);
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile()) return { kind: "incomplete", reason: "record path is not a regular file" };
+    const maxBytes = Math.min(stat.size, MAX_METADATA_BYTES);
+    const chunks = [];
+    let offset = 0;
+    while (offset < maxBytes) {
+      const chunk = Buffer.alloc(Math.min(1024, maxBytes - offset));
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, offset);
+      if (bytesRead === 0) break;
+      chunks.push(chunk.subarray(0, bytesRead));
+      offset += bytesRead;
+      const text = Buffer.concat(chunks).toString("utf8");
+      if (text.startsWith("---\n") || text.startsWith("---\r\n")) {
+        const frontMatter = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/u.exec(text);
+        if (frontMatter) return { kind: "record", meta: parseFrontMatter(frontMatter[0]).meta };
+      } else {
+        const parsed = parseMarkdownRecordHeader(text);
+        if (parsed.kind !== "pending") return parsed;
+      }
+    }
+    return { kind: "incomplete", reason: "record metadata header is missing or exceeds the metadata scan limit" };
+  } finally {
+    await handle.close();
+  }
+}
+
+async function collectActiveRecordPaths(activeRoot) {
+  const files = [];
+  const issues = [];
+  let capped = false;
+  async function walk(directory) {
+    if (capped) return;
+    let entries;
+    try {
+      entries = await fs.readdir(directory, { withFileTypes: true });
+    } catch {
+      issues.push({ file: path.relative(activeRoot, directory), reason: "directory could not be inventoried" });
+      return;
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      if (capped) return;
+      const filePath = path.join(directory, entry.name);
+      if (entry.isSymbolicLink()) {
+        issues.push({ file: path.relative(activeRoot, filePath), reason: "symbolic links are not eligible records" });
+        continue;
+      }
+      if (entry.isDirectory()) {
+        if (entry.name.startsWith(".") || entry.name === "_candidates" || entry.name === "knowledge-pending") continue;
+        await walk(filePath);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith(".md") || entry.name === "INDEX.md") continue;
+      files.push(filePath);
+      if (files.length > MAX_RECORD_FILES) {
+        files.pop();
+        issues.push({ file: path.relative(activeRoot, filePath), reason: `record inventory exceeds the ${MAX_RECORD_FILES}-file limit` });
+        capped = true;
+      }
+    }
+  }
+  await walk(activeRoot);
+  return { files, issues };
+}
+
+function normalizeRecordMetadata(meta, file, workspaceScope) {
+  const filenameId = path.basename(file, ".md");
+  const required = ["id", "title", "category", "scope", "status", "recorded", "verified"];
+  if (required.some((key) => typeof meta[key] !== "string" || !meta[key].trim())) {
+    return { kind: "incomplete", reason: "record is missing required metadata" };
+  }
+  if (!/^[a-z0-9](?:[a-z0-9-]{1,62}[a-z0-9])?$/u.test(meta.id) || meta.id !== filenameId) {
+    return { kind: "incomplete", reason: "record ID is invalid or does not match its filename" };
+  }
+  if (!isIsoDate(meta.recorded) || (meta.verified !== "not yet verified" && !isIsoDate(meta.verified))) {
+    return { kind: "incomplete", reason: "record dates are invalid" };
+  }
+  if (!VALID_RECORD_STATUSES.has(meta.status)) return { kind: "incomplete", reason: "record lifecycle status is unknown" };
+  if (!CATEGORIES.has(meta.category)) return { kind: "filtered", reason: "record category is not in the current knowledge contract", record: { id: meta.id, title: meta.title, category: meta.category, scope: meta.scope, status: meta.status, file } };
+  if (!scopeBelongsToWorkspace(meta.scope, workspaceScope)) {
+    return { kind: "filtered", reason: "record belongs to a different project scope", record: { id: meta.id, title: meta.title, category: meta.category, scope: meta.scope, status: meta.status, file } };
+  }
+  if (meta.status !== "active") return { kind: "filtered", reason: `record status is ${meta.status}`, record: { id: meta.id, title: meta.title, category: meta.category, scope: meta.scope, status: meta.status, file } };
+  return { kind: "record", record: { id: meta.id, title: meta.title, category: meta.category, scope: meta.scope, status: meta.status, recorded: meta.recorded, verified: meta.verified, file } };
+}
+
+function scopeBelongsToWorkspace(recordScope, workspaceScope) {
+  return !recordScope.startsWith("project:") || recordScope === workspaceScope || recordScope.startsWith(`${workspaceScope}/`);
+}
+
+function scopeMatches(recordScope, requestedScope, workspaceScope) {
+  if (!requestedScope || requestedScope === workspaceScope || recordScope === workspaceScope) return true;
+  return recordScope === requestedScope || recordScope.startsWith(`${requestedScope}/`) || requestedScope.startsWith(`${recordScope}/`);
+}
+
+export async function readKnowledge(cwd, { id, query, scope, category, limit = MAX_RETRIEVAL_RESULTS } = {}, { expectedRoot = PILOT_WORKSPACE_ROOT } = {}) {
   const locations = await resolvePilotLocations(cwd, expectedRoot);
   const activeStat = await lstatOrNull(locations.activeRoot);
-  if (!activeStat || !activeStat.isDirectory() || activeStat.isSymbolicLink() || await fs.realpath(locations.activeRoot) !== locations.activeRoot) {
-    return { status: "no_knowledge_store", matches: [], count: 0, note: "no promoted knowledge records exist in this workspace" };
+  if (!activeStat) {
+    return { status: "no_knowledge_store", matches: [], count: 0, complete: false, note: "no promoted knowledge store exists in this workspace" };
+  }
+  if (!activeStat.isDirectory() || activeStat.isSymbolicLink()) {
+    return { status: "unavailable", matches: [], count: 0, complete: false, note: "active knowledge root is not a real directory" };
+  }
+  try {
+    if (await fs.realpath(locations.activeRoot) !== locations.activeRoot) {
+      return { status: "unavailable", matches: [], count: 0, complete: false, note: "active knowledge root resolves outside its expected path" };
+    }
+  } catch {
+    return { status: "unavailable", matches: [], count: 0, complete: false, note: "active knowledge root could not be resolved" };
   }
 
-  const directory = await fs.opendir(locations.activeRoot);
-  const files = [];
-  for await (const entry of directory) {
-    if (!entry.isFile() || entry.isSymbolicLink()) continue;
-    if (!entry.name.endsWith(".md")) continue;
-    if (entry.name === "INDEX.md") continue;
-    files.push(entry.name);
-  }
-  files.sort();
+  if (scope !== undefined) requireText(scope, "scope", 160);
+  if (category !== undefined && !CATEGORIES.has(category)) fail("category is not an allowed knowledge category");
+  if (!Number.isSafeInteger(limit) || limit < 1) fail("limit must be a positive integer");
 
-  const records = [];
-  let bytesRead = 0;
-  for (const name of files) {
-    const filePath = path.join(locations.activeRoot, name);
-    let text;
+  let policy;
+  try {
+    policy = await loadPolicy(locations);
+  } catch (error) {
+    return { status: "unavailable", matches: [], count: 0, complete: false, note: `workspace scope policy could not be read: ${error.message}` };
+  }
+
+  const inventory = await collectActiveRecordPaths(locations.activeRoot);
+  const issues = [...inventory.issues];
+  const filtered = [];
+  const eligible = [];
+  for (const filePath of inventory.files) {
+    const relativePath = path.relative(locations.activeRoot, filePath).split(path.sep).join("/");
+    let header;
     try {
-      text = await readBoundedRegularFile(filePath, MAX_RECORD_BYTES);
-    } catch {
+      header = await readRecordMetadataHeader(filePath);
+    } catch (error) {
+      issues.push({ file: relativePath, reason: `metadata could not be read: ${error.message}` });
       continue;
     }
-    bytesRead += Buffer.byteLength(text, "utf8");
-    if (bytesRead > MAX_RETRIEVAL_BYTES) break;
-    const { meta, body } = parseFrontMatter(text);
-    records.push({
-      id: meta.id || name.replace(/\.md$/u, ""),
-      title: meta.title || "",
-      category: meta.category || "",
-      scope: meta.scope || "",
-      status: meta.status || "active",
-      file: name,
-      content: text,
-      body,
-    });
+    if (header.kind === "map") continue;
+    if (header.kind !== "record") {
+      issues.push({ file: relativePath, reason: header.reason || "record metadata could not be classified" });
+      continue;
+    }
+
+    const normalized = normalizeRecordMetadata(header.meta, relativePath, policy.scope);
+    if (normalized.kind === "incomplete") {
+      issues.push({ file: relativePath, reason: normalized.reason });
+      continue;
+    }
+    const record = normalized.record;
+    if (normalized.kind === "filtered") {
+      filtered.push({ ...record, reason: normalized.reason });
+      continue;
+    }
+    if (!scopeBelongsToWorkspace(record.scope, policy.scope)) {
+      filtered.push({ ...record, reason: "record belongs to a different project scope" });
+      continue;
+    }
+    if (!scopeMatches(record.scope, scope, policy.scope)) {
+      filtered.push({ ...record, reason: "record scope does not match the requested task scope" });
+      continue;
+    }
+    if (category && record.category !== category) {
+      filtered.push({ ...record, reason: "record category does not match the requested category" });
+      continue;
+    }
+    if (record.status !== "active") {
+      filtered.push({ ...record, reason: `record status is ${record.status}` });
+      continue;
+    }
+    eligible.push({ ...record, filePath });
   }
+
+  const complete = issues.length === 0;
+  const filteredSummary = filtered.slice(0, MAX_RETRIEVAL_RESULTS).map(({ id, title, category: recordCategory, scope: recordScope, status, file, reason }) => ({
+    id, title, category: recordCategory, scope: recordScope, status, file, reason,
+  }));
+  const base = {
+    complete,
+    searched: 0,
+    filteredCount: filtered.length,
+    filtered: filteredSummary,
+    ...(issues.length ? { issues: issues.slice(0, MAX_RETRIEVAL_RESULTS) } : {}),
+  };
 
   if (typeof id === "string" && id.trim()) {
     const wanted = id.trim().replace(/\.md$/u, "");
-    const exact = records.filter((record) => record.id === wanted || record.file === `${wanted}.md`);
-    if (exact.length === 0) {
-      return { status: "not_found", matches: [], count: 0, note: `no promoted record with id "${wanted}"`, available: records.map((record) => record.id) };
+    const match = eligible.find((record) => record.id === wanted);
+    if (!match) {
+      const excluded = filtered.find((record) => record.id === wanted);
+      if (issues.length) return { ...base, status: "incomplete", matches: [], count: 0, note: "the eligible record inventory was incomplete" };
+      if (excluded) {
+        const excludedSummary = filteredSummary.find((record) => record.id === wanted);
+        return { ...base, status: "filtered", filteredCount: 1, filtered: excludedSummary ? [excludedSummary] : [], matches: [], count: 0, note: excluded.reason };
+      }
+      return { ...base, status: "not_found", matches: [], count: 0, note: `no active in-scope record with id "${wanted}"` };
     }
-    return { status: "ok", matches: exact, count: exact.length };
+    try {
+      const content = await readBoundedRegularFile(match.filePath, MAX_RECORD_BYTES);
+      const { body } = parseFrontMatter(content);
+      const selected = { ...match, content, body };
+      delete selected.filePath;
+      return { ...base, status: complete ? "ok" : "incomplete", matches: [selected], count: 1, searched: 1, ...(issues.length ? { note: "the matching record was read, but the full inventory was incomplete" } : {}) };
+    } catch (error) {
+      return { ...base, status: "incomplete", matches: [], count: 0, issues: [...(base.issues || []), { file: match.file, reason: `record body could not be read: ${error.message}` }], note: "the matching record body could not be read" };
+    }
   }
 
-  if (typeof query === "string" && query.trim()) {
-    const needle = query.trim().toLowerCase();
-    const terms = needle.split(/\s+/u).filter(Boolean);
-    const scored = records
-      .map((record) => {
-        const haystack = `${record.id}\n${record.title}\n${record.category}\n${record.scope}\n${record.content}`.toLowerCase();
-        const hits = terms.filter((term) => haystack.includes(term)).length;
-        return { record, hits };
-      })
-      .filter((entry) => entry.hits > 0)
-      .sort((a, b) => b.hits - a.hits || a.record.id.localeCompare(b.record.id))
-      .slice(0, Math.max(1, Math.min(limit, MAX_RETRIEVAL_RESULTS)))
-      .map((entry) => entry.record);
-    if (scored.length === 0) {
-      return { status: "no_match", matches: [], count: 0, note: "no promoted record matched the query", searched: records.length };
+  const terms = typeof query === "string" && query.trim() ? query.trim().toLowerCase().split(/\s+/u).filter(Boolean) : [];
+  const scored = [];
+  let bytesRead = 0;
+  let searched = 0;
+  for (const record of eligible) {
+    let content;
+    try {
+      content = await readBoundedRegularFile(record.filePath, MAX_RECORD_BYTES);
+    } catch (error) {
+      issues.push({ file: record.file, reason: `record body could not be read: ${error.message}` });
+      continue;
     }
-    return { status: "ok", matches: scored, count: scored.length, searched: records.length };
+    const size = Buffer.byteLength(content, "utf8");
+    if (bytesRead + size > MAX_RETRIEVAL_BYTES) {
+      issues.push({ file: record.file, reason: `eligible record search exceeded the ${MAX_RETRIEVAL_BYTES}-byte limit` });
+      break;
+    }
+    bytesRead += size;
+    searched += 1;
+    const { body } = parseFrontMatter(content);
+    const materialized = { ...record, content, body };
+    delete materialized.filePath;
+    if (terms.length === 0) {
+      scored.push({ record: materialized, hits: 0 });
+      continue;
+    }
+    const haystack = `${record.id}\n${record.title}\n${record.category}\n${record.scope}\n${content}`.toLowerCase();
+    const hits = terms.filter((term) => haystack.includes(term)).length;
+    if (hits >= Math.max(1, Math.ceil(terms.length / 2))) scored.push({ record: materialized, hits });
   }
 
-  return { status: "ok", matches: records.slice(0, Math.max(1, Math.min(limit, MAX_RETRIEVAL_RESULTS))), count: records.length };
+  scored.sort((a, b) => b.hits - a.hits || a.record.id.localeCompare(b.record.id));
+  const resultLimit = Math.max(1, Math.min(limit, MAX_RETRIEVAL_RESULTS));
+  const matches = scored.slice(0, resultLimit).map((entry) => entry.record);
+  const totalMatches = scored.length;
+  const isComplete = issues.length === 0;
+  if (!isComplete) {
+    return { ...base, complete: false, status: "incomplete", matches, count: matches.length, totalMatches, searched, note: "the eligible record search did not complete" };
+  }
+  if (matches.length) {
+    return { ...base, status: "ok", matches, count: matches.length, totalMatches, searched, truncated: totalMatches > resultLimit };
+  }
+  if (filtered.length) {
+    return { ...base, status: "filtered", matches: [], count: 0, searched, note: "records existed but were excluded by scope, status, or category" };
+  }
+  return { ...base, status: "no_match", matches: [], count: 0, searched, note: "complete active in-scope record search found no match" };
 }

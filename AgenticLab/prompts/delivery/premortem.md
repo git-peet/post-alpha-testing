@@ -37,9 +37,9 @@ Rank findings by impact and evidence. Do not invent a fixed number of findings. 
 
 Compare any reusable finding with the plan's task-local learning list and authoritative sources already inspected. Merge a duplicate, update the evidence/status of an existing candidate, or say `no new candidate`; do not restate known contracts as new learning. A genuinely new candidate must include claim, scope, evidence/source, uncertainty/status, and why it could prevent future rediscovery. Keep this transient—do not write memory, logs, checkpoints, or feature files automatically.
 
-### Metrics and staging checkpoint (agent side, not project code)
+### Metrics and task-local learning handoff (agent side, not project code)
 
-When the consolidated task-local learning handoff contains one or more genuinely new candidates (after deduplication and verification against authoritative sources), the agent uses the AgenticLab knowledge-capture adapter (`AgenticLab/adapters/pi/knowledge-capture-tools.mjs`) to stage them as pending records in `AgenticLab/knowledge/`. The agent then emits one `candidate_staged` metric via `AgenticLab/adapters/pi/knowledge-capture-metrics.mjs` to `.pi/metrics/agenticlab.jsonl` (only `event` and `occurredAt`; no business data, rule details, or customer/cart content). This observation confirms the mechanism is active. The staged candidates remain pending until promoted by an explicit user-approved action (e.g., via `/knowledge-opt-in` or equivalent). This replaces the need for any import from `packages/evershop/src/` to emit metrics.
+This workflow is read-only. Keep any genuinely reusable finding in the report's task-local learning handoff only. Do not call triage, staging, or promotion tools, write candidate files under either knowledge path, or emit `candidate_staged`. Any later staging must be a separate, workspace-opted-in action through the approved adapter; promotion remains a separate user-approved action.
 
 ## Output
 
